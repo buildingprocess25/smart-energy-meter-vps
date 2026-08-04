@@ -2518,8 +2518,34 @@ function _processIncomingMQTTData() {
     updateConnectionStatus(true);
 }
 
+function _updateSettingsSensorStatuses() {
+    const activeDev = _deviceListCache.find(d => d.id === selectedDeviceId);
+    if (!activeDev || !activeDev.phases) return;
+
+    activeDev.phases.forEach(p => {
+        const item = document.getElementById(`phase-item_${selectedDeviceId}_${p.phase}`);
+        if (!item) return;
+        const statusEl = item.querySelector('.device-phase-status');
+        if (!statusEl) return;
+
+        const isEnabled = p.enabled !== false;
+        const phaseSeen = _phaseLastSeen[p.phase];
+        const isLive = phaseSeen && (Date.now() - phaseSeen <= 45000);
+        const statusHTML = !isEnabled 
+            ? '<span class="sensor-status-badge disabled"><span class="status-dot-pulse"></span> Nonaktif</span>'
+            : (isLive 
+                ? '<span class="sensor-status-badge live"><span class="status-dot-pulse"></span> Terkoneksi</span>' 
+                : '<span class="sensor-status-badge idle"><span class="status-dot-pulse"></span> Terputus</span>');
+
+        if (statusEl.innerHTML !== statusHTML) {
+            statusEl.innerHTML = statusHTML;
+        }
+    });
+}
+
 // Checks if the currently-selected phase has stopped publishing and blanks the cards
 function _checkPhaseDataFreshness() {
+    _updateSettingsSensorStatuses();
     if (!isConnected || !selectedPhase) return;
     const phaseSeen = _phaseLastSeen[selectedPhase];
     const phaseTimedOut = !phaseSeen || (Date.now() - phaseSeen > PHASE_DATA_TIMEOUT_MS);
