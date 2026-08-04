@@ -139,7 +139,6 @@ def _detect_phases(device_data: dict) -> list[str]:
         if isinstance(src, dict): keys.update(k for k in src if _PHASE_RE.match(k))
     return sorted(keys, key=lambda x: int(x[1:]))
 
-db_url = os.environ.get('DATABASE_URL')
 db_pool = None
 _db_init_lock = threading.Lock()
 
@@ -148,7 +147,8 @@ def init_db():
     with _db_init_lock:
         if db_pool:  # Sudah diinisialisasi oleh thread lain
             return
-        if not db_url or "postgres://" not in db_url:
+        db_url = os.environ.get('DATABASE_URL')
+        if not db_url or not (db_url.startswith("postgres://") or db_url.startswith("postgresql://")):
             print("WARNING: DATABASE_URL not set or invalid. Database operations will fail.")
             return
         try:
@@ -448,6 +448,9 @@ def _live_buffer_worker() -> None:
     time.sleep(2)
     while True:
         try:
+            if not db_pool:
+                time.sleep(10)
+                continue
             now_ms = int(time.time() * 1000)
             now = time.time()
 
@@ -516,13 +519,8 @@ def _live_buffer_worker() -> None:
         time.sleep(3)
 
 if not app.debug or os.environ.get("WERKZEUG_RUN_MAIN") == "true":
+    init_db()
     threading.Thread(target=_live_buffer_worker, daemon=True).start()
-
-def _init_db_defaults():
-    pass
-
-if not app.debug or os.environ.get("WERKZEUG_RUN_MAIN") == "true":
-    threading.Thread(target=_init_db_defaults, daemon=True).start()
 
 @app.route('/api/live-buffer/<device_id>')
 def get_live_buffer(device_id: str):
@@ -685,6 +683,26 @@ def get_config(): return jsonify({})
 @app.route('/api/devices')
 def list_devices():
     devices = []
+    if not db_pool:
+        now = time.time()
+        for did in sorted(_mqtt_live_data.keys()):
+            raw = _mqtt_live_data.get(did)
+            last_seen = _mqtt_last_seen.get(did, 0)
+            is_online = (now - last_seen <= 60) and bool(raw)
+            phases = []
+            if isinstance(raw, dict):
+                for ph in sorted([k for k in raw if _PHASE_RE.match(k)], key=lambda x: int(x[1:])):
+                    phases.append({'phase': ph, 'name': ph, 'enabled': True})
+            devices.append({
+                'id': did,
+                'name': did,
+                'online': is_online,
+                'lastSeen': (raw or {}).get('Timestamp') or '---',
+                'phases': phases,
+                'phaseCount': len(phases)
+            })
+        return jsonify(devices)
+
     try:
         with get_db_cursor() as cur:
             cur.execute("SELECT id, name, online, last_seen, sensors FROM devices")
