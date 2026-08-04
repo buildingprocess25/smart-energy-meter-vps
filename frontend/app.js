@@ -1937,10 +1937,10 @@ function renderDeviceList(devices) {
                 const phaseSeen = _phaseLastSeen[p.phase];
                 const isLive = phaseSeen && (Date.now() - phaseSeen <= 45000);
                 const statusHTML = !isEnabled 
-                    ? '<span style="color:var(--text-tertiary)">○ Nonaktif</span>'
+                    ? '<span class="sensor-status-badge disabled"><span class="status-dot-pulse"></span> Nonaktif</span>'
                     : (isLive 
-                        ? '<span style="color:var(--green);font-weight:700">● Terkoneksi (Aktif)</span>' 
-                        : '<span style="color:#ef4444;font-weight:600">🔴 Terputus (Idle)</span>');
+                        ? '<span class="sensor-status-badge live"><span class="status-dot-pulse"></span> Terkoneksi</span>' 
+                        : '<span class="sensor-status-badge idle"><span class="status-dot-pulse"></span> Terputus</span>');
                 return `
             <div class="device-phase-item${isEnabled ? '' : ' phase-disabled'}" id="phase-item_${d.id}_${p.phase}">
                 <div class="device-phase-view" id="phase-view_${d.id}_${p.phase}">
@@ -2317,10 +2317,14 @@ async function togglePhaseEnabled(deviceId, phase, enabled) {
         nameEl.style.opacity = enabled ? '' : '0.45';
         nameEl.style.textDecoration = enabled ? '' : 'line-through';
     }
-    const statusEl = item?.querySelector('.device-phase-status');
-    if (statusEl) statusEl.innerHTML = enabled
-        ? '<span style="color:var(--green);font-weight:700">● Aktif</span>'
-        : '<span style="color:var(--text-tertiary)">○ Nonaktif</span>';
+    const phaseSeen = _phaseLastSeen[phase];
+    const isLive = phaseSeen && (Date.now() - phaseSeen <= 45000);
+    const statusHTML = !enabled 
+        ? '<span class="sensor-status-badge disabled"><span class="status-dot-pulse"></span> Nonaktif</span>'
+        : (isLive 
+            ? '<span class="sensor-status-badge live"><span class="status-dot-pulse"></span> Terkoneksi</span>' 
+            : '<span class="sensor-status-badge idle"><span class="status-dot-pulse"></span> Terputus</span>');
+    if (statusEl) statusEl.innerHTML = statusHTML;
     if (deviceId === selectedDeviceId && dev?.phases) {
         const enabledPhases = dev.phases.filter(p => p.enabled !== false).map(p => p.phase);
         updatePhaseSelector(enabledPhases);

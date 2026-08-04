@@ -455,6 +455,38 @@ body {
 .custom-color-input-field::-webkit-color-swatch-wrapper { padding: 0; }
 .custom-color-input-field::-webkit-color-swatch { border: none; border-radius: 6px; }
 .custom-color-input-field::-moz-color-swatch { border: none; border-radius: 6px; }
+.sensor-status-badge {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 3px 9px; border-radius: 12px; font-size: 10.5px;
+    font-weight: 700; letter-spacing: 0.2px; font-family: var(--font-ui);
+}
+.sensor-status-badge.live {
+    background: rgba(40, 167, 69, 0.12); color: #16a34a;
+    border: 1px solid rgba(40, 167, 69, 0.28);
+}
+.sensor-status-badge.live .status-dot-pulse {
+    width: 6px; height: 6px; border-radius: 50%; background: #16a34a;
+    box-shadow: 0 0 6px rgba(22, 163, 74, 0.8); animation: statusPulse 1.8s infinite;
+}
+.sensor-status-badge.idle {
+    background: rgba(239, 68, 68, 0.10); color: #dc2626;
+    border: 1px solid rgba(239, 68, 68, 0.25);
+}
+.sensor-status-badge.idle .status-dot-pulse {
+    width: 6px; height: 6px; border-radius: 50%; background: #dc2626;
+}
+.sensor-status-badge.disabled {
+    background: var(--surface-3); color: var(--text-tertiary);
+    border: 1px solid var(--border);
+}
+.sensor-status-badge.disabled .status-dot-pulse {
+    width: 6px; height: 6px; border-radius: 50%; background: var(--text-tertiary);
+}
+@keyframes statusPulse {
+    0% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(22, 163, 74, 0.7); }
+    70% { transform: scale(1.05); box-shadow: 0 0 0 5px rgba(22, 163, 74, 0); }
+    100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(22, 163, 74, 0); }
+}
 .zoom-hint { display: flex; align-items: center; gap: 4px; font-size: 10px; color: var(--text-tertiary) !important; font-weight: 600; white-space: nowrap; }
 .reset-zoom-btn {
     display: inline-flex; align-items: center; gap: 6px;
