@@ -9,7 +9,9 @@ import psycopg2
 from psycopg2 import pool
 
 log = logging.getLogger('werkzeug')
-log.setLevel(logging.ERROR)
+# Load .env baik dari root directory maupun folder backend/
+load_dotenv(os.path.join(os.path.dirname(__file__), '..', '.env'))
+load_dotenv(os.path.join(os.path.dirname(__file__), '.env'))
 load_dotenv()
 
 _mqtt_live_data = {}
@@ -107,8 +109,14 @@ def _start_mqtt():
         if username:
             client.username_pw_set(username, password)
             
-        # Gunakan TLS jika port adalah 8883 (khas port secure MQTT) atau jika diaktifkan secara eksplisit
-        if port == 8883 or os.environ.get("MQTT_USE_TLS", "true").lower() == "true":
+        # Gunakan TLS jika diaktifkan secara eksplisit atau jika port adalah 8883
+        use_tls_env = os.environ.get("MQTT_USE_TLS")
+        if use_tls_env is not None:
+            use_tls = use_tls_env.lower() == "true"
+        else:
+            use_tls = (port == 8883)
+
+        if use_tls:
             client.tls_set()
 
         def on_connect(c, userdata, flags, rc, properties=None):
