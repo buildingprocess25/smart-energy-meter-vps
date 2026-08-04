@@ -1949,7 +1949,7 @@ function renderDeviceList(devices) {
                             onchange="togglePhaseEnabled('${d.id}','${p.phase}',this.checked)">
                         <span class="phase-toggle-track"></span>
                     </label>
-                    <div class="device-phase-badge" style="${isEnabled ? '' : 'opacity:.4'}">${p.phase}</div>
+                    <div class="device-phase-badge" style="background:${phaseColor};${isEnabled ? '' : 'opacity:.4'}">${p.phase}</div>
                     <div class="device-phase-info">
                         <p class="device-phase-name" id="phase-label_${d.id}_${p.phase}" style="${isEnabled ? '' : 'opacity:.45;text-decoration:line-through'}">${p.name || p.phase}</p>
                         <p class="device-phase-status">${statusHTML}</p>
