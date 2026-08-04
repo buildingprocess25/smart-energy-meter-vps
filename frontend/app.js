@@ -1934,6 +1934,13 @@ function renderDeviceList(devices) {
             ? d.phases.map(p => {
                 const isEnabled = p.enabled !== false;
                 const phaseColor = getPhaseColors(p.phase).line;
+                const phaseSeen = _phaseLastSeen[p.phase];
+                const isLive = phaseSeen && (Date.now() - phaseSeen <= 45000);
+                const statusHTML = !isEnabled 
+                    ? '<span style="color:var(--text-tertiary)">○ Nonaktif</span>'
+                    : (isLive 
+                        ? '<span style="color:var(--green);font-weight:700">● Terkoneksi (Aktif)</span>' 
+                        : '<span style="color:#ef4444;font-weight:600">🔴 Terputus (Idle)</span>');
                 return `
             <div class="device-phase-item${isEnabled ? '' : ' phase-disabled'}" id="phase-item_${d.id}_${p.phase}">
                 <div class="device-phase-view" id="phase-view_${d.id}_${p.phase}">
@@ -1945,12 +1952,13 @@ function renderDeviceList(devices) {
                     <div class="device-phase-badge" style="${isEnabled ? '' : 'opacity:.4'}">${p.phase}</div>
                     <div class="device-phase-info">
                         <p class="device-phase-name" id="phase-label_${d.id}_${p.phase}" style="${isEnabled ? '' : 'opacity:.45;text-decoration:line-through'}">${p.name || p.phase}</p>
-                        <p class="device-phase-status">${isEnabled ? '<span style="color:var(--green);font-weight:700">● Aktif</span>' : '<span style="color:var(--text-tertiary)">○ Nonaktif</span>'}</p>
+                        <p class="device-phase-status">${statusHTML}</p>
                     </div>
                     <button class="sensor-color-picker" style="background:${phaseColor}"
                         title="Pilih Warna Grafik untuk Sensor ${p.phase}"
                         onclick="openSensorColorPicker('${d.id}','${p.phase}','${phaseColor}')"></button>
                     <button class="device-phase-edit-btn" onclick="startRenamePhase('${d.id}','${p.phase}')" title="Ubah nama sensor">${editSVG}</button>
+                    <button class="device-delete-btn" onclick="deleteSensor('${d.id}','${p.phase}')" title="Hapus sensor ${p.phase} permanen" style="width:26px;height:26px;border-radius:.25rem 0 .25rem 0">${deleteSVG}</button>
                 </div>
                 <div class="device-phase-edit" id="phase-edit_${d.id}_${p.phase}" style="display:none">
                     <div class="device-phase-info">
@@ -2252,6 +2260,39 @@ async function savePhaseRename(deviceId, phase) {
         if ($('historyContent')?.classList.contains('active')) buildSessionUI();
         closeModal();
         await showModal('Error', e.name === 'AbortError' ? 'Request timeout (8s) - Periksa koneksi' : 'Gagal menyimpan: ' + e.message, 'error');
+    }
+}
+async function deleteSensor(deviceId, phase) {
+    const confirmed = await showModal('Hapus Sensor', `Apakah Anda yakin ingin menghapus sensor ${phase}?\n\nPengaturan nama dan warna untuk sensor ini akan dihapus dari device.`, 'warning', ['confirm']);
+    if (!confirmed) return;
+    
+    showGlobalLoader();
+    try {
+        const res = await fetch(`/api/devices/${encodeURIComponent(deviceId)}/sensors/${encodeURIComponent(phase)}`, {
+            method: 'DELETE'
+        });
+        const json = await res.json();
+        if (!json.ok) throw new Error(json.error || 'Gagal menghapus sensor');
+
+        const dev = _deviceListCache.find(d => d.id === deviceId);
+        if (dev && dev.phases) {
+            dev.phases = dev.phases.filter(p => p.phase !== phase);
+        }
+        delete _phaseLastSeen[phase];
+        if (rawRealtimeData) delete rawRealtimeData[phase];
+
+        hideGlobalLoader();
+        await showModal('Berhasil', `Sensor ${phase} berhasil dihapus dari device ${deviceId}.`, 'success');
+        
+        if (selectedDeviceId === deviceId) {
+            const enabledPhases = (dev?.phases || []).filter(p => p.enabled !== false).map(p => p.phase);
+            updatePhaseSelector(enabledPhases);
+            _rebuildChart();
+        }
+        await loadDevices();
+    } catch (e) {
+        hideGlobalLoader();
+        await showModal('Error', 'Gagal menghapus sensor: ' + e.message, 'error');
     }
 }
 async function togglePhaseEnabled(deviceId, phase, enabled) {

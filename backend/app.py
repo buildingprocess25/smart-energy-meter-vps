@@ -882,6 +882,28 @@ def set_sensor_color(device_id: str, phase: str):
     except Exception as e:
         return jsonify({'ok': False, 'error': str(e)}), 500
 
+@app.route('/api/devices/<device_id>/sensors/<phase>', methods=['DELETE'])
+def delete_sensor(device_id: str, phase: str):
+    phase = phase.upper()
+    if not validate_phase_key(phase): return jsonify({'ok': False, 'error': f'Sensor tidak valid: {phase}.'}), 400
+    try:
+        with get_db_cursor() as cur:
+            cur.execute("SELECT sensors FROM devices WHERE id = %s", (device_id,))
+            row = cur.fetchone()
+            sensors_list = []
+            if row and row[0]:
+                sensors_list = row[0] if isinstance(row[0], list) else json.loads(row[0])
+                
+            filtered_sensors = [s for s in sensors_list if s.get('phase') != phase]
+            cur.execute("UPDATE devices SET sensors = %s WHERE id = %s", (json.dumps(filtered_sensors), device_id))
+            
+        if device_id in _mqtt_live_data and isinstance(_mqtt_live_data[device_id], dict):
+            _mqtt_live_data[device_id].pop(phase, None)
+
+        return jsonify({'ok': True, 'phase': phase, 'device_id': device_id})
+    except Exception as e:
+        return jsonify({'ok': False, 'error': str(e)}), 500
+
 @app.route('/api/devices/<device_id>/sensors/<phase>/init', methods=['POST'])
 def init_sensor(device_id: str, phase: str):
     phase = phase.upper()
