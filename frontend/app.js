@@ -49,6 +49,24 @@ let timeFilter = 'all';
 let chartTargetDate = null;
 let _hourlyListenerDate = null;
 let _userIsZoomed = false;
+function _updateResetZoomUI() {
+    const btn = document.getElementById('resetZoomBtn');
+    if (btn) {
+        if (_userIsZoomed) {
+            btn.classList.remove('hidden');
+        } else {
+            btn.classList.add('hidden');
+        }
+    }
+}
+function resetChartZoom() {
+    _userIsZoomed = false;
+    if (realtimeChart) {
+        try { realtimeChart.resetZoom('easeOutQuart'); } catch (_) { }
+    }
+    _updateResetZoomUI();
+    _scheduleRender();
+}
 let _visiblePoints = 600;
 let activeOfflineSessionData = null;
 let activeOfflineChart = null;
@@ -87,7 +105,7 @@ function _doRender() {
     _fadeChartIn();
     _rafId = null;
     _rafDirty = false;
-    if (!realtimeChart || !_pageVisible || timeFilter !== 'all') return;
+    if (!realtimeChart || !_pageVisible || timeFilter !== 'all' || _userIsZoomed) return;
     const enabledKeys = _getEnabledPhaseKeys();
     const phases = enabledKeys.slice().sort((a, b) => parseInt(a.slice(1)) - parseInt(b.slice(1)));
     if (!phases.length) return;
@@ -144,15 +162,135 @@ let _lastChartDay = -1;
 let _timeWindowCheckId = null;
 let _aggRebuildId = null;
 const PHASE_COLORS = [
-    { line: '#006400', bar: 'rgba(0,100,0,0.85)', light: 'rgba(0,100,0,0.15)' },  // L1: Dark Green
-    { line: '#b38600', bar: 'rgba(179,134,0,0.85)', light: 'rgba(179,134,0,0.15)' },  // L2: Dark Gold
-    { line: '#004073', bar: 'rgba(0,64,115,0.85)', light: 'rgba(0,64,115,0.15)' },  // L3: Deep Blue
-    { line: '#333333', bar: 'rgba(51,51,51,0.85)', light: 'rgba(51,51,51,0.15)' },  // L4: Dark Gray
-    { line: '#4a2311', bar: 'rgba(74,35,17,0.85)', light: 'rgba(74,35,17,0.15)' },  // L5: Dark Brown
+    { line: '#00A651', bar: 'rgba(0,166,81,0.85)', light: 'rgba(0,166,81,0.15)' },    // L1: Vivid Green
+    { line: '#1E90FF', bar: 'rgba(30,144,255,0.85)', light: 'rgba(30,144,255,0.15)' },  // L2: Dodger Blue
+    { line: '#FF8C00', bar: 'rgba(255,140,0,0.85)', light: 'rgba(255,140,0,0.15)' },   // L3: Dark Orange
+    { line: '#8A2BE2', bar: 'rgba(138,43,226,0.85)', light: 'rgba(138,43,226,0.15)' },  // L4: Blue Violet
+    { line: '#FF1493', bar: 'rgba(255,20,147,0.85)', light: 'rgba(255,20,147,0.15)' },  // L5: Deep Pink
 ];
+
+function hexToRgba(hex, alpha) {
+    let c = (hex || '').replace('#', '');
+    if (c.length === 3) c = c.split('').map(x => x + x).join('');
+    const num = parseInt(c, 16);
+    if (isNaN(num)) return `rgba(22, 119, 255, ${alpha})`;
+    const r = (num >> 16) & 255;
+    const g = (num >> 8) & 255;
+    const b = num & 255;
+    return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
+
+function hslToHex(h, s, l) {
+    l /= 100;
+    const a = s * Math.min(l, 1 - l) / 100;
+    const f = n => {
+        const k = (n + h / 30) % 12;
+        const color = l - a * Math.max(Math.min(k - 3, 9 - k, 1), -1);
+        return `#${Math.round(255 * color).toString(16).padStart(2, '0')}`;
+    };
+    return `${f(0)}${f(4)}${f(8)}`;
+}
+
 function getPhaseColors(phase) {
-    const idx = parseInt(phase.slice(1)) - 1;
-    return PHASE_COLORS[Math.min(idx, PHASE_COLORS.length - 1)] || PHASE_COLORS[0];
+    const dev = _deviceListCache.find(d => d.id === selectedDeviceId);
+    const sensor = dev?.phases?.find(p => p.phase === phase);
+    let customColor = sensor?.color;
+
+    if (customColor && /^#[0-9A-Fa-f]{6}$/.test(customColor)) {
+        return {
+            line: customColor,
+            bar: hexToRgba(customColor, 0.85),
+            light: hexToRgba(customColor, 0.15)
+        };
+    }
+
+    const idx = parseInt((phase || '').slice(1)) - 1;
+    if (!isNaN(idx) && idx >= 0) {
+        if (idx < 5) return PHASE_COLORS[idx];
+        // Dynamic Golden Angle generator for L6..L99 so L11+ gets unique vivid colors automatically!
+        const hue = (idx * 137.5) % 360;
+        const hex = hslToHex(hue, 75, 45);
+        return {
+            line: hex,
+            bar: hexToRgba(hex, 0.85),
+            light: hexToRgba(hex, 0.15)
+        };
+    }
+    return PHASE_COLORS[0];
+}
+
+async function updateSensorColor(deviceId, phase, color) {
+    if (!deviceId || !phase || !color) return;
+    try {
+        const res = await fetch(`/api/devices/${encodeURIComponent(deviceId)}/sensors/${encodeURIComponent(phase)}/color`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ color })
+        });
+        const json = await res.json();
+        if (json.ok) {
+            const dev = _deviceListCache.find(d => d.id === deviceId);
+            if (dev && dev.phases) {
+                const s = dev.phases.find(p => p.phase === phase);
+                if (s) s.color = color;
+                else dev.phases.push({ phase, name: phase, enabled: true, color });
+            }
+            if (typeof renderPhaseToggles === 'function') renderPhaseToggles();
+            _rebuildChart(false);
+            if (dev) renderDeviceList([dev]);
+        }
+    } catch (e) {
+        console.error("Error updating sensor color:", e);
+    }
+}
+
+const PRESET_COLORS = [
+    '#00A651', '#1E90FF', '#FF8C00', '#8A2BE2', '#FF1493', '#00CED1',
+    '#FF3344', '#F59E0B', '#0D9488', '#6366F1', '#84CC16', '#EC4899'
+];
+
+let _activeColorTarget = { deviceId: null, phase: null };
+
+function openSensorColorPicker(deviceId, phase, currentColor) {
+    _activeColorTarget = { deviceId, phase };
+    const modal = document.getElementById('sensorColorModal');
+    const grid = document.getElementById('presetColorGrid');
+    const title = document.getElementById('colorModalTitle');
+    const customInput = document.getElementById('customColorPickerInput');
+
+    if (title) title.textContent = `Warna Grafik Sensor ${phase}`;
+    if (customInput) customInput.value = currentColor || '#1677ff';
+
+    if (grid) {
+        grid.innerHTML = PRESET_COLORS.map(c => `
+            <div class="preset-color-box${(currentColor || '').toLowerCase() === c.toLowerCase() ? ' selected' : ''}" 
+                 style="background: ${c};" 
+                 title="Pilih warna ${c}" 
+                 onclick="selectPresetColor('${c}')"></div>
+        `).join('');
+    }
+
+    if (modal) {
+        modal.classList.add('active');
+        document.body.style.overflow = 'hidden';
+    }
+}
+
+function closeSensorColorModal() {
+    const modal = document.getElementById('sensorColorModal');
+    if (modal) modal.classList.remove('active');
+    document.body.style.overflow = '';
+}
+
+function selectPresetColor(color) {
+    if (_activeColorTarget.deviceId && _activeColorTarget.phase) {
+        updateSensorColor(_activeColorTarget.deviceId, _activeColorTarget.phase, color);
+    }
+    closeSensorColorModal();
+}
+
+function onCustomColorPicked(color) {
+    selectPresetColor(color);
 }
 function createAreaGradient(ctx, chartArea, color) {
     const gradient = ctx.createLinearGradient(0, chartArea.top, 0, chartArea.bottom);
@@ -1233,30 +1371,20 @@ function initChart() {
                 },
                 zoom: {
                     zoom: {
-                        wheel: { enabled: true, speed: 0.15 },
+                        wheel: { enabled: true, speed: 0.08 },
                         pinch: { enabled: true },
                         mode: 'x',
                         onZoom: ({ chart }) => {
-                            if (timeFilter === 'all') {
-                                const { min, max } = chart.scales.x;
-                                _visiblePoints = Math.max(10, Math.min(MAX_DATA_POINTS, Math.round(max - min + 1)));
-                                try { chart.resetZoom('none'); } catch (_) { }
-                            } else {
-                                _userIsZoomed = true;
-                            }
+                            _userIsZoomed = true;
+                            _updateResetZoomUI();
                         },
                     },
                     pan: {
                         enabled: true,
                         mode: 'x',
                         onPan: ({ chart }) => {
-                            if (timeFilter === 'all') {
-                                const { min, max } = chart.scales.x;
-                                _visiblePoints = Math.max(10, Math.min(MAX_DATA_POINTS, Math.round(max - min + 1)));
-                                try { chart.resetZoom('none'); } catch (_) { }
-                            } else {
-                                _userIsZoomed = true;
-                            }
+                            _userIsZoomed = true;
+                            _updateResetZoomUI();
                         },
                     },
                     limits: { x: { minRange: 2 } },
@@ -1805,6 +1933,7 @@ function renderDeviceList(devices) {
         const phasesHTML = (d.phases && d.phases.length > 0)
             ? d.phases.map(p => {
                 const isEnabled = p.enabled !== false;
+                const phaseColor = getPhaseColors(p.phase).line;
                 return `
             <div class="device-phase-item${isEnabled ? '' : ' phase-disabled'}" id="phase-item_${d.id}_${p.phase}">
                 <div class="device-phase-view" id="phase-view_${d.id}_${p.phase}">
@@ -1818,6 +1947,9 @@ function renderDeviceList(devices) {
                         <p class="device-phase-name" id="phase-label_${d.id}_${p.phase}" style="${isEnabled ? '' : 'opacity:.45;text-decoration:line-through'}">${p.name || p.phase}</p>
                         <p class="device-phase-status">${isEnabled ? '<span style="color:var(--green);font-weight:700">● Aktif</span>' : '<span style="color:var(--text-tertiary)">○ Nonaktif</span>'}</p>
                     </div>
+                    <button class="sensor-color-picker" style="background:${phaseColor}"
+                        title="Pilih Warna Grafik untuk Sensor ${p.phase}"
+                        onclick="openSensorColorPicker('${d.id}','${p.phase}','${phaseColor}')"></button>
                     <button class="device-phase-edit-btn" onclick="startRenamePhase('${d.id}','${p.phase}')" title="Ubah nama sensor">${editSVG}</button>
                 </div>
                 <div class="device-phase-edit" id="phase-edit_${d.id}_${p.phase}" style="display:none">

@@ -199,6 +199,10 @@
                                             <button class="time-filter-btn" data-filter="week"
                                                 onclick="setTimeFilter('week')">Week</button>
                                         </div>
+                                        <button id="resetZoomBtn" class="reset-zoom-btn hidden" onclick="resetChartZoom()"
+                                            title="Klik untuk kembali menempel ke grafik real-time live">
+                                            <span class="pulse-dot">●</span> Live Track
+                                        </button>
                                     </div>
                                     <div class="chart-controls">
                                         <div id="chartPhaseToggles" class="chart-phase-toggles"></div>
@@ -548,6 +552,26 @@
                 <div class="modal-buttons" style="margin-top:20px">
                     <button class="modal-btn modal-btn-secondary" onclick="closeChangeTimeModal()">BATAL</button>
                     <button class="modal-btn modal-btn-primary" onclick="confirmChangeTime()">&#10004; SIMPAN</button>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div id="sensorColorModal" class="modal-overlay">
+        <div class="modal-container" style="max-width: 360px;">
+            <button class="modal-close" onclick="closeSensorColorModal()">&times;</button>
+            <div class="modal-content" style="text-align: center;">
+                <div class="modal-icon info">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <circle cx="12" cy="12" r="10"></circle>
+                        <path d="M12 8v8M8 12h8"></path>
+                    </svg>
+                </div>
+                <h3 class="modal-title" id="colorModalTitle">Warna Sensor</h3>
+                <p class="modal-message" style="margin-bottom:14px;font-size:12px;color:var(--text-secondary)">Pilih warna preset cepat atau tentukan warna kustom untuk grafik sensor ini.</p>
+                <div class="preset-color-grid" id="presetColorGrid"></div>
+                <div class="custom-color-row" style="margin-top: 16px; display: flex; align-items: center; justify-content: center; gap: 10px;">
+                    <span style="font-size: 12px; font-weight: 600; color: var(--text-tertiary);">Kustom:</span>
+                    <input type="color" id="customColorPickerInput" class="custom-color-input-field" onchange="onCustomColorPicked(this.value)">
                 </div>
             </div>
         </div>

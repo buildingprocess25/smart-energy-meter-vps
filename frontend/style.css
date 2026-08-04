@@ -427,7 +427,50 @@ body {
     box-shadow: var(--shadow-sm);
 }
 .phase-toggle-dot { width: 8px; height: 8px; border-radius: 50%; }
+.sensor-color-picker {
+    -webkit-appearance: none; -moz-appearance: none; appearance: none;
+    width: 22px; height: 22px; border: 1.5px solid var(--border);
+    border-radius: 50%; cursor: pointer; background: none; padding: 0;
+    flex-shrink: 0; transition: transform 0.2s ease, border-color 0.2s ease;
+}
+.sensor-color-picker::-webkit-color-swatch-wrapper { padding: 0; }
+.sensor-color-picker::-webkit-color-swatch { border: none; border-radius: 50%; }
+.sensor-color-picker::-moz-color-swatch { border: none; border-radius: 50%; }
+.sensor-color-picker:hover { transform: scale(1.18); border-color: var(--brand); }
+.preset-color-grid {
+    display: grid; grid-template-columns: repeat(6, 1fr); gap: 10px;
+    margin-top: 10px; padding: 12px; background: var(--surface-2);
+    border-radius: var(--radius-md); border: 1px solid var(--border);
+}
+.preset-color-box {
+    width: 100%; aspect-ratio: 1; border-radius: 8px; cursor: pointer;
+    border: 2px solid transparent; transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+.preset-color-box:hover { transform: scale(1.2); box-shadow: 0 4px 12px rgba(0,0,0,0.2); z-index: 2; }
+.preset-color-box.selected { border-color: #ffffff; box-shadow: 0 0 0 2px var(--brand-blue, #1677ff); }
+.custom-color-input-field {
+    -webkit-appearance: none; appearance: none; width: 34px; height: 34px;
+    border-radius: 8px; border: 1.5px solid var(--border); cursor: pointer; background: none; padding: 0;
+}
+.custom-color-input-field::-webkit-color-swatch-wrapper { padding: 0; }
+.custom-color-input-field::-webkit-color-swatch { border: none; border-radius: 6px; }
+.custom-color-input-field::-moz-color-swatch { border: none; border-radius: 6px; }
 .zoom-hint { display: flex; align-items: center; gap: 4px; font-size: 10px; color: var(--text-tertiary) !important; font-weight: 600; white-space: nowrap; }
+.reset-zoom-btn {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 5px 12px; background: #1677ff; color: #ffffff;
+    border: none; border-radius: 6px; font-family: var(--font-ui);
+    font-size: 11px; font-weight: 700; cursor: pointer;
+    transition: all 0.2s cubic-bezier(0.34, 1.56, 0.64, 1);
+    box-shadow: 0 2px 8px rgba(22, 119, 255, 0.35);
+}
+.reset-zoom-btn:hover {
+    transform: translateY(-1px) scale(1.04);
+    background: #0958d9; box-shadow: 0 4px 12px rgba(22, 119, 255, 0.45);
+}
+.reset-zoom-btn.hidden { display: none !important; }
+.pulse-dot { color: #00ff88; font-size: 12px; animation: pulseGlow 1.5s infinite; }
+@keyframes pulseGlow { 0% { opacity: 1; transform: scale(1); } 50% { opacity: 0.3; transform: scale(0.85); } 100% { opacity: 1; transform: scale(1); } }
 .parameter-select {
     padding: 6px 12px !important;
     border: 1.5px solid var(--border) !important;
@@ -462,7 +505,8 @@ body {
 }
 .chart-spinner.active { opacity: 1; pointer-events: auto; }
 @keyframes spin { 100% { transform: rotate(360deg); } }
-.chart-container canvas { width: 100% !important; height: 100% !important; cursor: crosshair; }
+.chart-container canvas { width: 100% !important; height: 100% !important; cursor: grab; }
+.chart-container canvas:active { cursor: grabbing !important; }
 .time-filter-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; justify-content: flex-end; }
 .isolar-date-navigator {
     display: flex;
@@ -788,29 +832,27 @@ mark.search-highlight { background: rgba(187,23,36,0.12); color: var(--brand); b
     display: flex; align-items: center; justify-content: center;
     width: 30px; height: 30px;
     border-radius: .375rem 0 .375rem 0;
-    border: 1.5px solid transparent; background: transparent;
-    color: var(--text-tertiary); cursor: pointer; flex-shrink: 0;
-    opacity: 0; transform: scale(0.8);
-    transition: opacity 0.15s ease, transform 0.15s ease, color 0.15s ease, border-color 0.15s ease, background 0.15s ease;
+    border: 1px solid var(--border); background: var(--surface-2);
+    color: var(--text-secondary); cursor: pointer; flex-shrink: 0;
+    opacity: 1; transform: scale(1);
+    transition: all 0.15s ease;
 }
 .device-edit-btn svg { width: 13px; height: 13px; pointer-events: none; }
-.device-item:hover .device-edit-btn { opacity: 1; transform: scale(1); color: var(--brand); border-color: rgba(187,23,36,0.25); background: var(--brand-muted); }
-.device-edit-btn:hover  { background: rgba(187,23,36,0.16) !important; border-color: var(--brand) !important; }
-.device-edit-btn:active { transform: scale(0.9) !important; }
+.device-edit-btn:hover { background: var(--brand-muted) !important; border-color: var(--brand) !important; color: var(--brand) !important; transform: scale(1.06) !important; }
+.device-edit-btn:active { transform: scale(0.95) !important; }
 
 .device-delete-btn {
     display: flex; align-items: center; justify-content: center;
     width: 30px; height: 30px;
     border-radius: 0 .375rem 0 .375rem;
-    border: 1.5px solid transparent; background: transparent;
-    color: var(--text-tertiary); cursor: pointer; flex-shrink: 0;
-    opacity: 0; transform: scale(0.8);
-    transition: opacity 0.15s ease, transform 0.15s ease, color 0.15s ease, border-color 0.15s ease, background 0.15s ease;
+    border: 1px solid var(--border); background: var(--surface-2);
+    color: var(--text-secondary); cursor: pointer; flex-shrink: 0;
+    opacity: 1; transform: scale(1);
+    transition: all 0.15s ease;
 }
 .device-delete-btn svg { width: 13px; height: 13px; pointer-events: none; }
-.device-item:hover .device-delete-btn { opacity: 1; transform: scale(1); color: var(--text-tertiary); border-color: rgba(255,255,255,0.1); background: rgba(255,255,255,0.05); }
-.device-delete-btn:hover  { background: rgba(220,53,69,0.16) !important; border-color: var(--destructive) !important; color: var(--destructive) !important; }
-.device-delete-btn:active { transform: scale(0.9) !important; }
+.device-delete-btn:hover  { background: rgba(220,53,69,0.14) !important; border-color: var(--destructive) !important; color: var(--destructive) !important; transform: scale(1.06) !important; }
+.device-delete-btn:active { transform: scale(0.95) !important; }
 .device-edit-mode {
     display: flex; align-items: center; justify-content: space-between;
     padding: 10px 14px; gap: 10px;
@@ -862,13 +904,12 @@ mark.search-highlight { background: rgba(187,23,36,0.12); color: var(--brand); b
     display: flex; align-items: center; justify-content: center;
     width: 26px; height: 26px;
     border-radius: .25rem 0 .25rem 0;
-    border: 1.5px solid transparent; background: transparent; color: var(--text-tertiary);
-    cursor: pointer; flex-shrink: 0; opacity: 0; transform: scale(0.8); transition: all 0.15s ease;
+    border: 1px solid var(--border); background: var(--surface-2); color: var(--text-secondary);
+    cursor: pointer; flex-shrink: 0; opacity: 1; transform: scale(1); transition: all 0.15s ease;
 }
 .device-phase-edit-btn svg { width: 12px; height: 12px; pointer-events: none; }
-.device-phase-item:hover .device-phase-edit-btn { opacity: 1; transform: scale(1); color: var(--brand); border-color: rgba(187,23,36,0.25); background: var(--brand-muted); }
-.device-phase-edit-btn:hover { background: rgba(187,23,36,0.16) !important; border-color: var(--brand) !important; }
-.device-phase-edit-btn:active { transform: scale(0.88) !important; }
+.device-phase-edit-btn:hover { background: var(--brand-muted) !important; border-color: var(--brand) !important; color: var(--brand) !important; transform: scale(1.06) !important; }
+.device-phase-edit-btn:active { transform: scale(0.95) !important; }
 .table-container {
     background: var(--surface); border: 1px solid var(--border);
     border-radius: .75rem 0 .75rem 0;
