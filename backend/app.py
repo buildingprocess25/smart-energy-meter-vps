@@ -671,8 +671,11 @@ def _stop_and_respond() -> None:
         })
     threading.Thread(target=_finalize_bg, args=(sid, did, cnt, se, th, ep, to_ms), daemon=True).start()
 
+_APP_VERSION = int(time.time())
+
 @app.route('/')
-def index(): return render_template('index.html')
+def index():
+    return render_template('index.html', v=_APP_VERSION)
 
 @app.route('/health', methods=['GET'])
 def health(): return jsonify({"status": "ok", "message": "Service is alive"}), 200
