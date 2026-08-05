@@ -564,7 +564,10 @@ function updatePhaseSelector(phases) {
     const container = $('phaseSelectorBtns');
     if (!container) return;
     const dev = _deviceListCache.find(d => d.id === selectedDeviceId);
-    const enabledPhases = phases.filter(p => {
+    const enabledKeys = _getEnabledPhaseKeys();
+    const mergedPhases = Array.from(new Set([...(phases || []), ...enabledKeys])).sort((a, b) => parseInt(a.slice(1)) - parseInt(b.slice(1)));
+
+    const enabledPhases = mergedPhases.filter(p => {
         const po = dev?.phases?.find(ph => ph.phase === p);
         return !po || po.enabled !== false;
     });
