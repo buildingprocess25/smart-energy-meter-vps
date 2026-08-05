@@ -458,15 +458,18 @@ function _detectPhaseKeys(raw) {
 }
 function _getEnabledPhaseKeys() {
     const dev = _deviceListCache.find(d => d.id === selectedDeviceId);
+    const registered = [];
     if (dev && dev.phases && dev.phases.length > 0) {
-        return dev.phases
-            .filter(p => p.enabled !== false)
-            .map(p => p.phase);
+        dev.phases.forEach(p => {
+            if (p.enabled !== false) registered.push(p.phase);
+        });
     }
-    // Fallback: search phaseChartData or just return L1 if everything is missing
-    const keys = Object.keys(phaseChartData).filter(k => /^L\d+$/.test(k));
-    if (keys.length > 0) return keys;
-    return ['L1'];
+    // Dynamically merge any newly detected phases from chart data or raw live data
+    const chartKeys = Object.keys(phaseChartData).filter(k => /^L\d+$/.test(k));
+    const rawKeys = rawRealtimeData ? Object.keys(rawRealtimeData).filter(k => /^L\d+$/.test(k)) : [];
+    const merged = new Set([...registered, ...chartKeys, ...rawKeys]);
+    if (!merged.size) return ['L1'];
+    return Array.from(merged).sort((a, b) => parseInt(a.slice(1)) - parseInt(b.slice(1)));
 }
 function normalizeHistoryData(raw) {
     if (!raw) return null;
@@ -2427,6 +2430,14 @@ function startLiveBufferPolling(deviceId) {
 
                     _processIncomingMQTTData();
                     updateConnectionStatus(true);
+
+                    // Panggil loadDevices jika terdeteksi phase baru (misal L17) yang belum terdaftar di UI
+                    const dev = _deviceListCache.find(d => d.id === selectedDeviceId);
+                    const knownPhases = (dev?.phases || []).map(p => p.phase);
+                    const incomingPhases = Object.keys(lastValidItem.data).filter(k => /^L\d+$/.test(k));
+                    if (incomingPhases.some(p => !knownPhases.includes(p))) {
+                        loadDevices();
+                    }
                 }
             }
         } catch (e) {

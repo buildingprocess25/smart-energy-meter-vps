@@ -726,16 +726,41 @@ def list_devices():
         for row in rows:
             did, name, online, last_seen, sensors_json = row
             phases = []
+            sensors_list = []
             if sensors_json:
                 sensors_list = sensors_json if isinstance(sensors_json, list) else json.loads(sensors_json)
-                for s in sensors_list:
-                    phases.append({
-                        'phase': s.get('phase'),
-                        'name': s.get('name', s.get('phase')),
-                        'properties': s.get('properties', []),
-                        'enabled': s.get('enabled', True),
-                        'color': s.get('color', None)
+
+            # Auto-discover phase baru dari MQTT live data (misal L17, L18, dst. yang baru terkirim)
+            raw = _mqtt_live_data.get(did) or {}
+            live_detected = [k for k in raw if _PHASE_RE.match(k)]
+            existing_phases = {s.get('phase') for s in sensors_list if isinstance(s, dict)}
+            added = False
+            for ph in live_detected:
+                if ph not in existing_phases:
+                    sensors_list.append({
+                        'phase': ph,
+                        'name': f'Sensor {ph[1:]}',
+                        'enabled': True,
+                        'properties': []
                     })
+                    existing_phases.add(ph)
+                    added = True
+
+            if added:
+                try:
+                    with get_db_cursor() as cur2:
+                        cur2.execute("UPDATE devices SET sensors = %s WHERE id = %s", (json.dumps(sensors_list), did))
+                except Exception as ex:
+                    print(f"Error auto-updating sensors for {did}: {ex}")
+
+            for s in sensors_list:
+                phases.append({
+                    'phase': s.get('phase'),
+                    'name': s.get('name', s.get('phase')),
+                    'properties': s.get('properties', []),
+                    'enabled': s.get('enabled', True),
+                    'color': s.get('color', None)
+                })
             devices.append({
                 'id': did,
                 'name': name,
