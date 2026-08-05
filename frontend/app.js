@@ -121,7 +121,10 @@ function _doRender() {
     phases.forEach((phase, i) => {
         let values = phaseChartData[phase]?.[selectedParameter] || [];
         if (!values.length) values = Array(total).fill(0);
-        else if (values.length < total) values = [...Array(total - values.length).fill(0), ...values];
+        else if (values.length < total) {
+            const firstValid = values.find(v => v != null && v > 0) ?? 0;
+            values = [...Array(total - values.length).fill(firstValid), ...values];
+        }
         const sliced = values.slice(start);
         const labelName = getPhaseLabel(phase);
         const ds = realtimeChart.data.datasets.find(d => d.label === labelName);
@@ -1198,7 +1201,10 @@ function getAllPhaseDatasets() {
         getValues = (phase) => {
             let { values } = getAggregatedDataForPhase(phase, selectedParameter);
             if (!values || values.length === 0) return Array(labels.length).fill(0);
-            if (values.length < labels.length) return [...Array(labels.length - values.length).fill(0), ...values];
+            if (values.length < labels.length) {
+                const firstValid = values.find(v => v != null && v > 0) ?? 0;
+                return [...Array(labels.length - values.length).fill(firstValid), ...values];
+            }
             return values;
         };
     }
@@ -1770,21 +1776,55 @@ function _appendChartPoint(point) {
         : `${_MON[_d.getMonth()]} ${_d.getDate()}, ${String(_d.getHours()).padStart(2, '0')}:${String(_d.getMinutes()).padStart(2, '0')}`;
     chartLabels.push(label);
     chartTimestamps.push(ts);
+    const SHORT_MAP = {
+        'Voltage (V)': 'V', 'Current (A)': 'A', 'Power (W)': 'W',
+        'Frequency (Hz)': 'Hz', 'Active Energy (kWh)': 'kWh', 'Power Factor': 'pf',
+    };
     const fv = (pd, k) => {
-        if (pd[k] == null) return null;
-        try { return parseFloat(pd[k]) || 0; } catch (_) { return 0; }
+        if (!pd) return 0;
+        const val = pd[k] ?? pd[SHORT_MAP[k]];
+        if (val == null) return 0;
+        try { return parseFloat(val) || 0; } catch (_) { return 0; }
     };
     phases.forEach(phase => {
         if (!phaseChartData[phase]) {
             phaseChartData[phase] = Object.fromEntries(PARAM_KEYS.map(k => [k, []]));
         }
         const pd = point[phase] || {};
-        phaseChartData[phase].voltage.push(fv(pd, 'Voltage (V)'));
-        phaseChartData[phase].current.push(fv(pd, 'Current (A)'));
-        phaseChartData[phase].power.push(fv(pd, 'Power (W)'));
-        phaseChartData[phase].frequency.push(fv(pd, 'Frequency (Hz)'));
-        phaseChartData[phase].energy.push(fv(pd, 'Active Energy (kWh)'));
-        phaseChartData[phase].powerFactor.push(fv(pd, 'Power Factor'));
+        const vV  = fv(pd, 'Voltage (V)');
+        const vA  = fv(pd, 'Current (A)');
+        const vW  = fv(pd, 'Power (W)');
+        const vHz = fv(pd, 'Frequency (Hz)');
+        const vE  = fv(pd, 'Active Energy (kWh)');
+        const vPF = fv(pd, 'Power Factor');
+
+        const currentArr = phaseChartData[phase].current;
+        const targetLen = chartLabels.length - 1;
+        if (currentArr.length < targetLen) {
+            const padCount = targetLen - currentArr.length;
+            const fillV  = vV  > 0 ? vV  : 0;
+            const fillA  = vA  > 0 ? vA  : 0;
+            const fillW  = vW  > 0 ? vW  : 0;
+            const fillHz = vHz > 0 ? vHz : 0;
+            const fillE  = vE  > 0 ? vE  : 0;
+            const fillPF = vPF > 0 ? vPF : 0;
+
+            for (let i = 0; i < padCount; i++) {
+                phaseChartData[phase].voltage.push(fillV);
+                phaseChartData[phase].current.push(fillA);
+                phaseChartData[phase].power.push(fillW);
+                phaseChartData[phase].frequency.push(fillHz);
+                phaseChartData[phase].energy.push(fillE);
+                phaseChartData[phase].powerFactor.push(fillPF);
+            }
+        }
+
+        phaseChartData[phase].voltage.push(vV);
+        phaseChartData[phase].current.push(vA);
+        phaseChartData[phase].power.push(vW);
+        phaseChartData[phase].frequency.push(vHz);
+        phaseChartData[phase].energy.push(vE);
+        phaseChartData[phase].powerFactor.push(vPF);
     });
     if (chartLabels.length > MAX_DATA_POINTS) {
         chartLabels.shift();
