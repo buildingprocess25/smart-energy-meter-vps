@@ -1202,6 +1202,35 @@ def get_sessions(device_id: str):
                 'phases': phases_list,           # ['L1', 'L2', 'L3']
                 'phaseNames': session_phase_names.get(sid, {ph: ph for ph in phases_list}),
             })
+
+        # Gabungkan active session dari memory jika sedang berjalan untuk device ini
+        # Ini mencegah tabel & badge memantul/hilang antara 0 sesi dan 1 sesi sebelum/saat data ditulis
+        with _capture_lock:
+            if _capture_state.get('active') and _capture_state.get('device_id') == device_id:
+                active_sid = _capture_state.get('session_id')
+                active_sname = _capture_state.get('session_name')
+                active_start = _capture_state.get('started_at')
+                active_count = _capture_state.get('count', 0)
+                active_phases = _capture_state.get('enabled_phases', [])
+                active_names = _capture_state.get('sensor_names', {})
+
+                existing = next((s for s in sessions if s['id'] == active_sid), None)
+                if existing:
+                    existing['recordCount'] = max(existing['recordCount'], active_count)
+                else:
+                    sessions.insert(0, {
+                        'id': active_sid,
+                        'name': active_sname,
+                        'startTime': active_start,
+                        'endTime': None,
+                        'recordCount': active_count,
+                        'startTimestamp': int(time.time() * 1000),
+                        'deviceId': device_id,
+                        'deviceName': device_name,
+                        'phases': active_phases,
+                        'phaseNames': active_names or {ph: ph for ph in active_phases},
+                    })
+
         return jsonify(sessions)
     except Exception as e:
         print(f"Error getting sessions: {e}")
