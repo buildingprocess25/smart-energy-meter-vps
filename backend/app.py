@@ -208,10 +208,15 @@ def init_db():
                     cur.execute("SELECT column_name FROM information_schema.columns WHERE table_name='history' AND column_name='phase_name';")
                     if not cur.fetchone():
                         cur.execute("ALTER TABLE history ADD COLUMN phase_name VARCHAR(100) DEFAULT NULL;")
-                    cur.execute("CREATE INDEX IF NOT EXISTS idx_telemetry_device_epoch ON telemetry(device_id, epoch);")
-                    cur.execute("CREATE INDEX IF NOT EXISTS idx_telemetry_device_phase ON telemetry(device_id, phase);")
-                    cur.execute("CREATE INDEX IF NOT EXISTS idx_history_session ON history(session_id);")
-                    cur.execute("CREATE INDEX IF NOT EXISTS idx_history_device_session ON history(device_id, session_id);")
+                    def create_index_safe(idx_name, create_sql):
+                        cur.execute("SELECT 1 FROM pg_indexes WHERE indexname = %s", (idx_name,))
+                        if not cur.fetchone():
+                            cur.execute(create_sql)
+
+                    create_index_safe('idx_telemetry_device_epoch', "CREATE INDEX idx_telemetry_device_epoch ON telemetry(device_id, epoch);")
+                    create_index_safe('idx_telemetry_device_phase', "CREATE INDEX idx_telemetry_device_phase ON telemetry(device_id, phase);")
+                    create_index_safe('idx_history_session', "CREATE INDEX idx_history_session ON history(session_id);")
+                    create_index_safe('idx_history_device_session', "CREATE INDEX idx_history_device_session ON history(device_id, session_id);")
 
                     # Unique constraint untuk cegah duplikat snapshot telemetry
                     # (terjadi saat Flask debug mode menjalankan 2 proses sekaligus)
@@ -223,10 +228,7 @@ def init_db():
                           AND a.phase = b.phase
                           AND a.timestamp = b.timestamp
                     """)
-                    cur.execute("""
-                        CREATE UNIQUE INDEX IF NOT EXISTS idx_telemetry_unique_slot
-                        ON telemetry(device_id, phase, timestamp)
-                    """)
+                    create_index_safe('idx_telemetry_unique_slot', "CREATE UNIQUE INDEX idx_telemetry_unique_slot ON telemetry(device_id, phase, timestamp);")
                     conn.commit()
                     print("Database tables initialized successfully.")
             except Exception as e:
