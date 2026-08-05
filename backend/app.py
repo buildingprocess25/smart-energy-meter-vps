@@ -920,6 +920,40 @@ def set_sensor_color(device_id: str, phase: str):
     except Exception as e:
         return jsonify({'ok': False, 'error': str(e)}), 500
 
+@app.route('/api/devices/<device_id>/sensors/<phase>/enabled', methods=['POST'])
+def set_sensor_enabled(device_id: str, phase: str):
+    phase = phase.upper()
+    if not validate_phase_key(phase): return jsonify({'ok': False, 'error': f'Sensor tidak valid: {phase}.'}), 400
+    body = request.get_json(silent=True) or {}
+    enabled = bool(body.get('enabled', True))
+    try:
+        with get_db_cursor() as cur:
+            cur.execute("SELECT sensors FROM devices WHERE id = %s", (device_id,))
+            row = cur.fetchone()
+            sensors_list = []
+            if row and row[0]:
+                sensors_list = row[0] if isinstance(row[0], list) else json.loads(row[0])
+                
+            found = False
+            for s in sensors_list:
+                if s.get('phase') == phase:
+                    s['enabled'] = enabled
+                    found = True
+                    break
+            if not found:
+                sensors_list.append({
+                    'phase': phase,
+                    'name': f'Sensor {phase[1:]}',
+                    'enabled': enabled,
+                    'properties': []
+                })
+                
+            cur.execute("UPDATE devices SET sensors = %s WHERE id = %s", (json.dumps(sensors_list), device_id))
+        return jsonify({'ok': True, 'enabled': enabled, 'phase': phase, 'device_id': device_id})
+    except Exception as e:
+        print(f"Error in set_sensor_enabled: {e}")
+        return jsonify({'ok': False, 'error': str(e)}), 500
+
 @app.route('/api/devices/<device_id>/sensors/<phase>', methods=['DELETE'])
 def delete_sensor(device_id: str, phase: str):
     phase = phase.upper()
