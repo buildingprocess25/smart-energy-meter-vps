@@ -1503,6 +1503,16 @@ def get_device_chart_data(device_id: str):
         print(f"Error in get_device_chart_data: {e}")
         return jsonify([]), 500
 
+@app.route('/api/capture/log')
+def get_capture_log():
+    try:
+        if os.path.exists("capture_error.log"):
+            with open("capture_error.log", "r") as f:
+                return f.read(), 200, {'Content-Type': 'text/plain'}
+        return "No errors logged yet.", 200, {'Content-Type': 'text/plain'}
+    except Exception as e:
+        return str(e), 500, {'Content-Type': 'text/plain'}
+
 if __name__ == '__main__':
     flask_host = os.environ.get("FLASK_HOST", "0.0.0.0")
     try:
