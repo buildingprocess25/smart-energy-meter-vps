@@ -2213,6 +2213,7 @@ async function onDeviceChange(deviceId) {
         dailyHistoryData = {};
     }
     if (_chartTimer) { clearInterval(_chartTimer); _chartTimer = null; }
+    if (_liveBufferPollTimer) { clearInterval(_liveBufferPollTimer); _liveBufferPollTimer = null; }
     selectedDeviceId = deviceId;
     const activeDev = _deviceListCache.find(d => d.id === deviceId);
     selectedDeviceName = activeDev && activeDev.name && activeDev.name !== activeDev.id ? `${activeDev.id} ${activeDev.name}` : deviceId;
@@ -2386,11 +2387,63 @@ async function togglePhaseEnabled(deviceId, phase, enabled) {
         if (deviceId === selectedDeviceId) _rebuildChart();
     }
 }
+let _liveBufferPollTimer = null;
+
+function startLiveBufferPolling(deviceId) {
+    if (_liveBufferPollTimer) {
+        clearInterval(_liveBufferPollTimer);
+        _liveBufferPollTimer = null;
+    }
+
+    const pollFn = async () => {
+        if (!selectedDeviceId || selectedDeviceId !== deviceId) return;
+        try {
+            const res = await fetch(`/api/live-buffer/${encodeURIComponent(deviceId)}`);
+            if (!res.ok) return;
+            const dataList = await res.json();
+            if (!Array.isArray(dataList) || dataList.length === 0) return;
+
+            const latestItem = dataList[dataList.length - 1];
+            if (latestItem.data && latestItem.data.offline) {
+                isConnected = false;
+                updateConnectionStatus(false);
+            } else {
+                const lastValidItem = dataList.slice().reverse().find(item => item.data && !item.data.offline);
+                if (lastValidItem) {
+                    rawRealtimeData = JSON.parse(JSON.stringify(lastValidItem.data));
+                    isConnected = true;
+                    lastDataTimestamp = Date.now();
+
+                    // Update per-phase last seen timestamp & last known data untuk status realtime
+                    const nowMs = Date.now();
+                    Object.keys(lastValidItem.data).forEach(ph => {
+                        if (/^L\d+$/.test(ph)) {
+                            _phaseLastSeen[ph] = nowMs;
+                            if (lastValidItem.data[ph]) {
+                                _lastKnownPhaseData[ph] = lastValidItem.data[ph];
+                            }
+                        }
+                    });
+
+                    _processIncomingMQTTData();
+                    updateConnectionStatus(true);
+                }
+            }
+        } catch (e) {
+            console.error('[LiveBuffer] Polling error:', e);
+        }
+    };
+
+    pollFn();
+    _liveBufferPollTimer = setInterval(pollFn, 3000);
+}
+
 function _attachRealtimeListener(deviceId) {
     _prevDeviceId = deviceId;
     _chartInit(deviceId);
     _firstSnap = true;
 
+    startLiveBufferPolling(deviceId);
     initMQTT();
     _subscribeToDevice(deviceId);
 }
@@ -2398,7 +2451,9 @@ function _attachRealtimeListener(deviceId) {
 function initMQTT() {
     if (_mqttClient) return;
 
-    updateConnectionStatus('connecting');
+    if (!isConnected) {
+        updateConnectionStatus('connecting');
+    }
     const brokerUrl = 'wss://166f9507c83945a4a1c4be54fccdb9a9.s1.eu.hivemq.cloud:8884/mqtt';
     const options = {
         username: 'EnergyMeter',
