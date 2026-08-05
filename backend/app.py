@@ -599,7 +599,7 @@ def _do_capture_io(device_id, session_id, sched_ts, interval, last_hash, last_ch
         h   = _data_hash(raw); now = time.time()
         if h != last_hash[0]: last_hash[0] = h; last_change[0] = now
         stale   = (now - _mqtt_last_seen.get(device_id, 0))
-        offline = raw is None or normalize(raw) is None or stale > max(interval * 2, 6)
+        offline = raw is None or stale > 300
         sched_shifted = sched_ts + (time_offset_ms / 1000.0)
         ts  = datetime.fromtimestamp(sched_shifted, tz=_WIB).strftime('%H:%M:%S %d/%m/%Y')
         epoch_val = int(sched_shifted * 1000)
