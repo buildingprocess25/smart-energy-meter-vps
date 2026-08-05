@@ -2412,6 +2412,7 @@ async function togglePhaseEnabled(deviceId, phase, enabled) {
         : (isLive 
             ? '<span class="sensor-status-badge live"><span class="status-dot-pulse"></span> Terkoneksi</span>' 
             : '<span class="sensor-status-badge idle"><span class="status-dot-pulse"></span> Terputus</span>');
+    const statusEl = item?.querySelector('.device-phase-status');
     if (statusEl) statusEl.innerHTML = statusHTML;
     if (deviceId === selectedDeviceId && dev?.phases) {
         const enabledPhases = dev.phases.filter(p => p.enabled !== false).map(p => p.phase);
