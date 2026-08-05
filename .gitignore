@@ -34,3 +34,7 @@ node_modules/
 task.md
 implementation_plan.md
 walkthrough.md
+
+# Arduino / ESP32 Code
+*.ino
+exampleCodeEsp32.ino

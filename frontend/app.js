@@ -29,8 +29,10 @@ let selectedDeviceName = '';
 let lastSensorValues = null;
 // Per-phase last-seen: tracks when each phase last received an MQTT message
 let _phaseLastSeen = {}; // { 'L1': <timestamp ms>, 'L2': <timestamp ms>, ... }
-const PHASE_DATA_TIMEOUT_MS = 30000; // 30 seconds
+const PHASE_DATA_TIMEOUT_MS = 90000; // 90 detik — sesuai delta-publishing ESP32 (hanya kirim saat ada perubahan)
 let _phaseTimeoutCheckId = null;
+// Cache data phase terakhir yang valid — agar chart tidak anjlok ke 0 saat data stale sesaat
+let _lastKnownPhaseData = {}; // { 'L1': { 'Voltage (V)': ..., ... }, 'L2': {...}, ... }
 let _deviceListCache = [];
 let _prevDeviceId = '';
 let currentSessionId = null;
@@ -1490,11 +1492,27 @@ function _chartZeroPoint() {
 function _chartPush() {
     const ts = Date.now();
     const online = isConnected && !!rawRealtimeData;
-    let phases = online ? _detectPhaseKeys(rawRealtimeData) : _getEnabledPhaseKeys();
+    // Kumpulkan semua phase dari live data + last known cache
+    const livePhasesSet = new Set(online ? _detectPhaseKeys(rawRealtimeData) : []);
+    const cachedPhasesSet = new Set(Object.keys(_lastKnownPhaseData).filter(k => /^L\d+$/.test(k)));
+    const enabledPhases = new Set(_getEnabledPhaseKeys());
+    const allPhases = new Set([...livePhasesSet, ...cachedPhasesSet, ...enabledPhases]);
+    let phases = [...allPhases].sort((a, b) => parseInt(a.slice(1)) - parseInt(b.slice(1)));
     if (!phases.length) phases = ['L1'];
     const point = { ts };
     phases.forEach(ph => {
-        point[ph] = (online && rawRealtimeData[ph]) ? rawRealtimeData[ph] : _chartZeroPoint();
+        if (online && rawRealtimeData[ph]) {
+            // Data segar dari live: update cache dan gunakan
+            _lastKnownPhaseData[ph] = rawRealtimeData[ph];
+            point[ph] = rawRealtimeData[ph];
+        } else if (_lastKnownPhaseData[ph]) {
+            // Data stale (ESP32 tidak kirim karena tidak ada perubahan): pakai cache terakhir
+            // Ini mencegah grafik anjlok ke 0 saat nilai listrik stabil
+            point[ph] = _lastKnownPhaseData[ph];
+        } else {
+            // Belum pernah ada data sama sekali: isi 0 sebagai fallback awal
+            point[ph] = _chartZeroPoint();
+        }
     });
     _appendChartPoint(point);
     const raw = _rebuildRawFromPoint(point);
@@ -1539,6 +1557,9 @@ async function _chartInit(deviceId) {
     const seq = ++_chartInitSeq; // setiap panggilan dapat nomor unik
     if (_chartTimer) { clearInterval(_chartTimer); _chartTimer = null; }
     if (_rafId) { cancelAnimationFrame(_rafId); _rafId = null; }
+    // Reset cache phase saat ganti device agar tidak ada sisa data device sebelumnya
+    _lastKnownPhaseData = {};
+    _phaseLastSeen = {};
 
     const canvas = document.getElementById('realtimeChart');
     if (canvas) {
@@ -1614,6 +1635,25 @@ async function _chartInit(deviceId) {
                         }
                     }
                 }
+            }
+
+            // ── Bangun _phaseLastSeen & _lastKnownPhaseData dari live-buffer ──
+            // Iterasi mundur agar phase yang lebih baru menimpa yang lama
+            for (let i = dataList.length - 1; i >= 0; i--) {
+                const item = dataList[i];
+                if (!item?.data || item.data.offline) continue;
+                const ts = item.timestamp;
+                Object.keys(item.data).forEach(ph => {
+                    if (!/^L\d+$/.test(ph)) return;
+                    // Update _phaseLastSeen dengan timestamp terbaru yang ada data untuk phase ini
+                    if (!_phaseLastSeen[ph] || ts > _phaseLastSeen[ph]) {
+                        _phaseLastSeen[ph] = ts;
+                    }
+                    // Update _lastKnownPhaseData sekali saja (dari item terbaru)
+                    if (!_lastKnownPhaseData[ph] && item.data[ph]) {
+                        _lastKnownPhaseData[ph] = item.data[ph];
+                    }
+                });
             }
         }
 
@@ -2181,6 +2221,7 @@ async function onDeviceChange(deviceId) {
     resetChartData();
     rawRealtimeData = null;
     _phaseLastSeen = {}; // reset per-phase timestamps on device change
+    _lastKnownPhaseData = {}; // reset cached phase data on device change
 
     const canvas = document.getElementById('realtimeChart');
     if (canvas) {
@@ -2576,10 +2617,10 @@ function updateConnectionStatus(connected) {
 }
 function checkDataFreshness() {
     const now = Date.now();
-    // [FIX] Naikkan timeout dari 30s → 60s.
-    // ESP32 interval 3s + delta filter: saat bacaan stabil, bisa tidak ada publish >30s.
-    // 60s memberi ruang cukup sebelum dianggap benar-benar offline.
-    if (lastDataTimestamp > 0 && (now - lastDataTimestamp > 60000)) {
+    // Timeout 300 detik agar sinkron dengan backend (300s = threshold offline backend).
+    // ESP32 delta-filter: saat bacaan listrik stabil, bisa tidak ada publish selama menit-menit.
+    // Backend heartbeat (30s) memastikan lastDataTimestamp selalu diperbarui walau nilai tidak berubah.
+    if (lastDataTimestamp > 0 && (now - lastDataTimestamp > 300000)) {
         if (isConnected) {
             isConnected = false; realtimeData = null; rawRealtimeData = null;
             updateConnectionStatus(false);

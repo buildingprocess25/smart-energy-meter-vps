@@ -46,7 +46,7 @@ def _on_message(client, userdata, msg):
         payload = msg.payload.decode('utf-8')
         parts = topic.split('/')
         if len(parts) >= 2 and parts[0] == 'energymeter':
-            device_id = parts[1]
+            device_id = parts[1].strip().rstrip(':').strip()
             _mqtt_last_seen[device_id] = time.time()
             if device_id not in _mqtt_live_data:
                 _mqtt_live_data[device_id] = {}
@@ -329,6 +329,8 @@ _capture_state = {
 def _data_hash(raw): return hashlib.md5(json.dumps(raw, sort_keys=True).encode()).hexdigest() if raw else None
 _hourly_stop = threading.Event()
 _last_write_per_device: dict[str, str] = {}  # guard duplikat per device
+_live_buffer_last_push: dict[str, float] = {}  # waktu terakhir data dipush ke live buffer per device
+HEARTBEAT_INTERVAL = 30  # detik; push heartbeat ke live-buffer agar frontend tidak stale
 
 def _get_telemetry_phases(device_id: str, raw: dict) -> list[str]:
     """Dapatkan daftar phase yang harus di-snapshot untuk device ini.
@@ -378,7 +380,7 @@ def _do_hourly_capture_device(device_id: str) -> None:
 
         # Data MQTT terakhir dari cache (bisa None jika device belum pernah kirim data)
         raw            = _mqtt_live_data.get(device_id) or {}
-        device_offline = time.time() - _mqtt_last_seen.get(device_id, 0) > 60
+        device_offline = time.time() - _mqtt_last_seen.get(device_id, 0) > 300
 
         # Deteksi phase secara dinamis — mendukung L6–L10 dan seterusnya
         telemetry_phases = _get_telemetry_phases(device_id, raw)
@@ -469,7 +471,7 @@ def _live_buffer_worker() -> None:
             for did in dids:
                 raw = _mqtt_live_data.get(did)
                 last_seen = _mqtt_last_seen.get(did, 0)
-                is_offline = (now - last_seen > 60) or not raw
+                is_offline = (now - last_seen > 300) or not raw
 
                 if did not in _device_live_buffer:
                     _device_live_buffer[did] = deque(maxlen=600)
@@ -484,11 +486,22 @@ def _live_buffer_worker() -> None:
                         offline_updates.append(did)
                 else:
                     h = _data_hash(raw)
-                    if _device_live_hash.get(did) != h:
+                    data_changed = _device_live_hash.get(did) != h
+                    time_since_push = now - _live_buffer_last_push.get(did, 0)
+                    should_heartbeat = time_since_push >= HEARTBEAT_INTERVAL
+
+                    if data_changed:
                         _device_live_hash[did] = h
                         _device_last_change_ms[did] = now_ms
                         _device_is_offline[did] = False
                         _device_live_buffer[did].append({'timestamp': now_ms, 'data': raw})
+                        _live_buffer_last_push[did] = now
+                    elif should_heartbeat:
+                        # Heartbeat: push data terakhir lagi walau tidak berubah
+                        # Tujuannya agar frontend tahu device masih online dan rawRealtimeData tidak stale
+                        _device_is_offline[did] = False
+                        _device_live_buffer[did].append({'timestamp': now_ms, 'data': raw})
+                        _live_buffer_last_push[did] = now
 
                     meta = devices_meta.get(did)
                     status_changed = not meta or meta['online'] != True
@@ -691,7 +704,7 @@ def list_devices():
         for did in sorted(_mqtt_live_data.keys()):
             raw = _mqtt_live_data.get(did)
             last_seen = _mqtt_last_seen.get(did, 0)
-            is_online = (now - last_seen <= 60) and bool(raw)
+            is_online = (now - last_seen <= 300) and bool(raw)
             phases = []
             if isinstance(raw, dict):
                 for ph in sorted([k for k in raw if _PHASE_RE.match(k)], key=lambda x: int(x[1:])):
