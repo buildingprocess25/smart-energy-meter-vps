@@ -218,6 +218,21 @@ def init_db():
                     create_index_safe('idx_history_session', "CREATE INDEX idx_history_session ON history(session_id);")
                     create_index_safe('idx_history_device_session', "CREATE INDEX idx_history_device_session ON history(device_id, session_id);")
 
+                    # Fix broken sequences from database migration
+                    for table_name in ['telemetry', 'history']:
+                        cur.execute(f"SELECT column_default FROM information_schema.columns WHERE table_name='{table_name}' AND column_name='id';")
+                        res = cur.fetchone()
+                        if res and res[0] is None:
+                            seq_name = f"{table_name}_id_seq_fallback"
+                            cur.execute("SELECT 1 FROM pg_class WHERE relname=%s", (seq_name,))
+                            if not cur.fetchone():
+                                cur.execute(f"CREATE SEQUENCE {seq_name};")
+                                cur.execute(f"SELECT MAX(id) FROM {table_name};")
+                                max_id = cur.fetchone()[0]
+                                if max_id:
+                                    cur.execute(f"SELECT setval('{seq_name}', {max_id});")
+                            cur.execute(f"ALTER TABLE {table_name} ALTER COLUMN id SET DEFAULT nextval('{seq_name}');")
+
                     # Unique constraint untuk cegah duplikat snapshot telemetry
                     # (terjadi saat Flask debug mode menjalankan 2 proses sekaligus)
                     cur.execute("""
