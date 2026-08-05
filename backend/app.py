@@ -205,7 +205,9 @@ def init_db():
                             phase_name VARCHAR(100) DEFAULT NULL
                         );
                     """)
-                    cur.execute("ALTER TABLE history ADD COLUMN IF NOT EXISTS phase_name VARCHAR(100) DEFAULT NULL;")
+                    cur.execute("SELECT column_name FROM information_schema.columns WHERE table_name='history' AND column_name='phase_name';")
+                    if not cur.fetchone():
+                        cur.execute("ALTER TABLE history ADD COLUMN phase_name VARCHAR(100) DEFAULT NULL;")
                     cur.execute("CREATE INDEX IF NOT EXISTS idx_telemetry_device_epoch ON telemetry(device_id, epoch);")
                     cur.execute("CREATE INDEX IF NOT EXISTS idx_telemetry_device_phase ON telemetry(device_id, phase);")
                     cur.execute("CREATE INDEX IF NOT EXISTS idx_history_session ON history(session_id);")
@@ -635,6 +637,11 @@ def _do_capture_io(device_id, session_id, sched_ts, interval, last_hash, last_ch
             _capture_state['count'] += len(phases)
     except Exception as e:
         print(f"Error in _do_capture_io: {e}")
+        try:
+            with open("capture_error.log", "a") as f:
+                f.write(f"Error in _do_capture_io: {e}\n")
+        except:
+            pass
 
 def _capture_worker(stop: threading.Event, wake: threading.Event) -> None:
     last_hash: list = [None]; last_change: list = [None]
