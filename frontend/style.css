@@ -407,9 +407,9 @@ body {
     flex: 1; min-height: 0; display: flex; flex-direction: column;
     border-bottom: 3px solid var(--yellow) !important;
 }
-.chart-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 14px; flex-wrap: wrap; gap: 10px; flex-shrink: 0; }
+.chart-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; flex-wrap: wrap; gap: 10px; flex-shrink: 0; }
 .chart-header h3 { font-size: 11px !important; font-weight: 800 !important; color: var(--text-tertiary) !important; letter-spacing: 1.2px !important; text-transform: uppercase !important; font-family: var(--font-ui) !important; align-self: center; }
-.chart-header-right { display: flex; flex-direction: column; gap: 8px; align-items: flex-end; }
+.chart-header-right { display: flex; flex-direction: row; gap: 8px; align-items: center; justify-content: flex-end; flex-wrap: wrap; }
 .chart-controls { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
 .chart-phase-toggles { display: flex; gap: 6px; align-items: center; margin-right: 4px; }
 .phase-toggle-btn {
@@ -500,7 +500,34 @@ body {
     transform: translateY(-1px) scale(1.04);
     background: #0958d9; box-shadow: 0 4px 12px rgba(22, 119, 255, 0.45);
 }
-.reset-zoom-btn.hidden { display: none !important; }
+.reset-zoom-btn.hidden, .floating-reset-zoom-btn.hidden { display: none !important; }
+.floating-reset-zoom-btn {
+    position: absolute;
+    bottom: 14px;
+    right: 14px;
+    z-index: 25;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 14px;
+    font-size: 11px;
+    font-weight: 800;
+    font-family: var(--font-ui);
+    color: #ffffff;
+    background: rgba(15, 23, 42, 0.88);
+    backdrop-filter: blur(8px);
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    border-radius: 20px;
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.25);
+    cursor: pointer;
+    transition: all 0.2s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+.floating-reset-zoom-btn:hover {
+    transform: translateY(-2px) scale(1.05);
+    background: var(--brand);
+    border-color: rgba(255, 255, 255, 0.3);
+    box-shadow: 0 6px 18px rgba(187, 23, 36, 0.4);
+}
 .pulse-dot { color: #00ff88; font-size: 12px; animation: pulseGlow 1.5s infinite; }
 @keyframes pulseGlow { 0% { opacity: 1; transform: scale(1); } 50% { opacity: 0.3; transform: scale(0.85); } 100% { opacity: 1; transform: scale(1); } }
 .parameter-select {
@@ -518,7 +545,7 @@ body {
     background: var(--surface) !important;
 }
 .chart-container { 
-    flex: 1; position: relative; min-height: 320px;
+    flex: 1; position: relative; min-height: 200px;
     transition: opacity 0.25s ease-in-out, transform 0.35s cubic-bezier(0.34, 1.56, 0.64, 1);
     opacity: 1;
     transform: translateY(0);
@@ -1277,3 +1304,146 @@ mark.search-highlight { background: rgba(187,23,36,0.12); color: var(--brand); b
     background: linear-gradient(135deg, color-mix(in srgb, var(--destructive) 85%, white), var(--destructive)) !important;
     box-shadow: 0 6px 16px color-mix(in srgb, var(--destructive) 40%, transparent) !important;
 }
+
+/* Header Group & Recording Badge */
+.header-right-group {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+.recording-badge {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 14px;
+    background: rgba(220, 53, 69, 0.12);
+    border: 1px solid rgba(220, 53, 69, 0.35);
+    border-radius: var(--radius-card);
+    backdrop-filter: blur(8px);
+    transition: all 0.3s ease;
+}
+.recording-badge:hover {
+    background: rgba(220, 53, 69, 0.18);
+    border-color: rgba(220, 53, 69, 0.5);
+    box-shadow: 0 2px 10px rgba(220, 53, 69, 0.2);
+}
+.rec-dot {
+    color: #ff3547;
+    font-size: 14px;
+    animation: rec-pulse 1.2s infinite ease-in-out;
+}
+@keyframes rec-pulse {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.3; transform: scale(0.8); }
+}
+.rec-title {
+    font-size: 11px;
+    font-weight: 800;
+    letter-spacing: 0.6px;
+    color: #ff3547;
+    text-transform: uppercase;
+}
+.rec-info {
+    font-size: 11px;
+    font-weight: 700;
+    color: var(--text-primary);
+    background: rgba(255, 255, 255, 0.15);
+    padding: 2px 6px;
+    border-radius: 4px;
+    max-width: 140px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.rec-stop-btn {
+    border: none;
+    background: #ff3547;
+    color: #fff;
+    font-size: 10px;
+    font-weight: 800;
+    padding: 3px 10px;
+    border-radius: 4px;
+    cursor: pointer;
+    text-transform: uppercase;
+    transition: background 0.2s ease, transform 0.1s ease;
+}
+.rec-stop-btn:hover {
+    background: #e02435;
+    transform: scale(1.05);
+}
+.rec-stop-btn:active {
+    transform: scale(0.95);
+}
+
+/* Session Dropdown Select on Chart */
+.chart-session-select {
+    padding: 6px 12px;
+    background: var(--surface-2);
+    color: var(--text-primary);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    outline: none;
+    transition: border-color 0.2s ease, box-shadow 0.2s ease;
+    max-width: 220px;
+    text-overflow: ellipsis;
+}
+.chart-session-select:hover, .chart-session-select:focus {
+    border-color: var(--brand);
+    box-shadow: 0 0 0 2px var(--brand-muted);
+}
+
+/* Chart Canvas Cursor & Gesture UX */
+#realtimeChart, .chart-container canvas, #owChartCanvas {
+    cursor: crosshair !important;
+    touch-action: none;
+}
+
+/* Batch Navigation Pagination CSS */
+.batch-nav-container {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 6px 12px;
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md) 0 var(--radius-md) 0;
+    margin-top: 8px;
+    flex-shrink: 0;
+}
+.batch-nav-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 12px;
+    font-size: 11.5px;
+    font-weight: 700;
+    color: var(--text-primary);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+.batch-nav-btn:hover:not(:disabled) {
+    border-color: var(--brand);
+    color: var(--brand);
+    background: var(--brand-muted);
+}
+.batch-nav-btn:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+}
+.batch-nav-info {
+    font-size: 11.5px;
+    font-weight: 600;
+    color: var(--text-secondary);
+}
+.batch-nav-info strong {
+    color: var(--brand);
+}
+
+

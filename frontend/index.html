@@ -38,11 +38,19 @@
                     </div>
                 </div>
             </a>
-            <div class="status-indicator">
-                <div class="status-dot connecting" id="statusDot"></div>
-                <div class="status-text">
-                    <p class="status-label">Status</p>
-                    <p class="status-value" id="statusText">CONNECTING</p>
+            <div class="header-right-group">
+                <div class="recording-badge" id="recordingBadge" style="display: none;">
+                    <span class="rec-dot">●</span>
+                    <span class="rec-title">REC</span>
+                    <span class="rec-info" id="recBadgeInfo">15s</span>
+                    <button class="rec-stop-btn" onclick="quickStopCapture()" title="Hentikan Perekaman Sesi Ini">Stop</button>
+                </div>
+                <div class="status-indicator">
+                    <div class="status-dot connecting" id="statusDot"></div>
+                    <div class="status-text">
+                        <p class="status-label">Status</p>
+                        <p class="status-value" id="statusText">CONNECTING</p>
+                    </div>
                 </div>
             </div>
         </div>
@@ -198,13 +206,15 @@
                                                 onclick="setTimeFilter('day')">Day</button>
                                             <button class="time-filter-btn" data-filter="week"
                                                 onclick="setTimeFilter('week')">Week</button>
+                                            <button class="time-filter-btn" data-filter="session"
+                                                onclick="setTimeFilter('session')">Session</button>
                                         </div>
-                                        <button id="resetZoomBtn" class="reset-zoom-btn hidden" onclick="resetChartZoom()"
-                                            title="Klik untuk kembali menempel ke grafik real-time live">
-                                            <span class="pulse-dot">●</span> Live Track
-                                        </button>
                                     </div>
                                     <div class="chart-controls">
+                                        <select id="chartSessionSelect" class="chart-session-select" style="display:none;"
+                                            onchange="onChartSessionChange(this.value)">
+                                            <option value="">Memuat Sesi...</option>
+                                        </select>
                                         <div id="chartPhaseToggles" class="chart-phase-toggles"></div>
                                         <select id="parameterSelect" class="parameter-select"
                                             onchange="changeParameter()">
@@ -221,7 +231,12 @@
                             <div class="chart-container">
                                 <div id="chartSpinner" class="chart-spinner"></div>
                                 <canvas id="realtimeChart"></canvas>
+                                <button id="resetZoomBtn" class="floating-reset-zoom-btn hidden" onclick="resetChartZoom()"
+                                    title="Klik untuk kembali menempel ke grafik real-time live">
+                                    <span class="pulse-dot">●</span> Live Track
+                                </button>
                             </div>
+                            <div id="dashChartBatchNav" style="display:none"></div>
                         </div>
                     </div>
                 </div>
@@ -313,7 +328,12 @@
                                 <h4>Grafik Telemetri Sesi</h4>
                                 <p>Visualisasi parameter sensor yang terekam dalam file</p>
                             </div>
-                            <div style="display:flex; gap:10px; align-items:center">
+                            <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap">
+                                <div class="time-filter-group" style="scale:0.9; transform-origin:right center;">
+                                    <button class="time-filter-btn active" id="owFilter_session" onclick="setOwTimeFilter('session')">Sesi</button>
+                                    <button class="time-filter-btn" id="owFilter_day" onclick="setOwTimeFilter('day')">Day (15m)</button>
+                                    <button class="time-filter-btn" id="owFilter_week" onclick="setOwTimeFilter('week')">Week (1d)</button>
+                                </div>
                                 <select id="owParamSelect" class="param-select" style="width:140px" onchange="onOwParamChange()">
                                     <option value="Power">Power (W)</option>
                                     <option value="Voltage">Voltage (V)</option>
@@ -328,6 +348,7 @@
                         <div style="height:320px; position:relative; width:100%">
                             <canvas id="owChartCanvas"></canvas>
                         </div>
+                        <div id="owChartBatchNav" style="display:none"></div>
                     </div>
 
                     <!-- Sensor Tabbed Tables -->

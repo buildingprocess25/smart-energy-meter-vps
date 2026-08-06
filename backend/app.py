@@ -1329,6 +1329,103 @@ def get_session_history_phase(device_id: str, session_id: str, phase: str):
         print(f"Error in get_session_history_phase: {e}")
         return jsonify({}), 500
 
+@app.route('/api/history/session-chart-data/<session_id>')
+def get_session_chart_data(session_id: str):
+    try:
+        page_size = min(max(500, int(request.args.get('page_size', 3000))), 10000)
+        show_all = request.args.get('all', 'false').lower() == 'true'
+
+        with get_db_cursor() as cur:
+            cur.execute("""
+                SELECT timestamp, epoch, phase, voltage, current, power, frequency, energy, power_factor, offline, phase_name, device_id, session_name
+                FROM history
+                WHERE session_id = %s
+                ORDER BY epoch ASC
+            """, (session_id,))
+            rows = cur.fetchall()
+
+        if not rows:
+            return jsonify({'meta': {}, 'data': []})
+
+        import math
+        buckets = {}
+        phase_names = {}
+        device_id = rows[0][11]
+        session_name = rows[0][12]
+
+        for row in rows:
+            ts, epoch_val, phase, v, c, w, hz, kwh, pf, offline, ph_name, did, sname = row
+            ts_ms = int(epoch_val)
+            if ts_ms not in buckets:
+                buckets[ts_ms] = {}
+            if ph_name and phase not in phase_names:
+                phase_names[phase] = ph_name
+
+            apparent = (v * c) / 1000.0
+            power_kw = w / 1000.0
+            reactive = math.sqrt(max(0.0, (apparent ** 2) - (power_kw ** 2)))
+            try:
+                phase_angle = math.acos(max(-1.0, min(1.0, pf))) * 180.0 / math.pi
+            except Exception:
+                phase_angle = 0.0
+
+            buckets[ts_ms][phase] = {
+                'Voltage':     v,
+                'Current':     c,
+                'Power':       w,
+                'Frequency':   hz,
+                'Energy':      kwh,
+                'PowerFactor': pf,
+                'Apparent':    round(apparent, 4),
+                'Reactive':    round(reactive, 4),
+                'Phase1':      round(phase_angle, 2),
+                'offline':     bool(offline),
+            }
+
+        sorted_ts = sorted(buckets.keys())
+        total_time_slots = len(sorted_ts)
+
+        page_raw = str(request.args.get('page', 'last')).lower()
+        if show_all or total_time_slots <= page_size:
+            sampled_ts = sorted_ts
+            total_pages = 1
+            current_page = 1
+        else:
+            total_pages = math.ceil(total_time_slots / page_size)
+            if page_raw in ('last', 'latest'):
+                current_page = total_pages
+            else:
+                try:
+                    current_page = min(max(1, int(page_raw)), total_pages)
+                except ValueError:
+                    current_page = total_pages
+            start_idx = (current_page - 1) * page_size
+            end_idx = start_idx + page_size
+            sampled_ts = sorted_ts[start_idx:end_idx]
+
+        result_data = [{'timestamp': ts, 'data': buckets[ts]} for ts in sampled_ts]
+        phases = sorted(list({ph for ts in buckets for ph in buckets[ts]}), key=lambda x: int(x[1:]) if x[1:].isdigit() else 0)
+
+        meta = {
+            'sessionId': session_id,
+            'sessionName': session_name,
+            'deviceId': device_id,
+            'totalRows': len(rows),
+            'totalTimeSlots': total_time_slots,
+            'sampledCount': len(result_data),
+            'page': current_page,
+            'totalPages': total_pages,
+            'pageSize': page_size,
+            'phases': phases,
+            'phaseNames': phase_names,
+        }
+
+        return jsonify({'meta': meta, 'data': result_data})
+    except Exception as e:
+        print(f"Error in get_session_chart_data: {e}")
+        return jsonify({'meta': {}, 'data': []}), 500
+
+
 @app.route('/api/capture/rename-session', methods=['POST'])
 def rename_session():
     body = request.get_json(silent=True) or {}

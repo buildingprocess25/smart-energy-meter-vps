@@ -50,6 +50,8 @@ let selectedParameter = 'current';
 let timeFilter = 'all';
 let chartTargetDate = null;
 let _hourlyListenerDate = null;
+let sessionChartData = [];
+let sessionMeta = null;
 let _userIsZoomed = false;
 function _updateResetZoomUI() {
     const btn = document.getElementById('resetZoomBtn');
@@ -64,10 +66,18 @@ function _updateResetZoomUI() {
 function resetChartZoom() {
     _userIsZoomed = false;
     if (realtimeChart) {
+        if (realtimeChart.scales?.x?.options) {
+            delete realtimeChart.scales.x.options.min;
+            delete realtimeChart.scales.x.options.max;
+        }
+        if (realtimeChart.scales?.y?.options) {
+            delete realtimeChart.scales.y.options.min;
+            delete realtimeChart.scales.y.options.max;
+        }
         try { realtimeChart.resetZoom('easeOutQuart'); } catch (_) { }
     }
     _updateResetZoomUI();
-    _scheduleRender();
+    _rebuildChart(false);
 }
 let _visiblePoints = 600;
 let activeOfflineSessionData = null;
@@ -306,23 +316,62 @@ function createAreaGradient(ctx, chartArea, color) {
     gradient.addColorStop(1, `rgba(${r},${g},${b},0)`);
     return gradient;
 }
+let _mouseChartPos = { x: null, y: null, active: false, chart: null };
+
 const crosshairPlugin = {
     id: 'isolarCrosshair',
     afterDraw(chart) {
-        const active = chart.tooltip?._active;
-        if (!active?.length) return;
+        if (!_mouseChartPos.active || _mouseChartPos.x == null || _mouseChartPos.y == null) return;
+        if (_mouseChartPos.chart && _mouseChartPos.chart !== chart && _mouseChartPos.chart.canvas !== chart.canvas) return;
+
         const ctx = chart.ctx;
-        const x = active[0].element.x;
-        const { top, bottom } = chart.chartArea;
+        const { top, bottom, left, right } = chart.chartArea;
+        const mx = _mouseChartPos.x;
+        const my = _mouseChartPos.y;
+
+        if (mx < left || mx > right || my < top || my > bottom) return;
+
         ctx.save();
         ctx.beginPath();
-        ctx.moveTo(x, top);
-        ctx.lineTo(x, bottom);
+        // Garis Vertikal (+)
+        ctx.moveTo(mx, top);
+        ctx.lineTo(mx, bottom);
+        // Garis Horizontal (+) tepat di posisi kursor mouse!
+        ctx.moveTo(left, my);
+        ctx.lineTo(right, my);
+
         ctx.lineWidth = 1;
-        ctx.strokeStyle = 'rgba(100,116,139,0.4)';
+        ctx.strokeStyle = 'rgba(100, 116, 139, 0.6)';
         ctx.setLineDash([4, 4]);
         ctx.stroke();
-        if (timeFilter === 'all') {
+
+        // Gambar badge angka Y di sumbu Y (TradingView style)
+        const yScale = chart.scales?.y;
+        if (yScale) {
+            const yVal = yScale.getValueForPixel(my);
+            if (yVal != null && !isNaN(yVal)) {
+                const info = (chart === realtimeChart ? PARAM_INFO[selectedParameter] : null) || {};
+                const unit = info.unit || (yScale.options?.title?.text || '');
+                const valStr = yVal.toFixed(2) + (unit ? ' ' + unit : '');
+                ctx.font = 'bold 10px "Outfit", "Segoe UI", sans-serif';
+                const textWidth = ctx.measureText(valStr).width;
+                const badgeW = textWidth + 10;
+                const badgeH = 18;
+                const badgeX = left - badgeW - 4;
+                const badgeY = my - badgeH / 2;
+
+                ctx.fillStyle = 'rgba(15, 23, 42, 0.88)';
+                ctx.fillRect(badgeX, badgeY, badgeW, badgeH);
+                ctx.fillStyle = '#ffffff';
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.fillText(valStr, badgeX + badgeW / 2, my);
+            }
+        }
+
+        // Highlight titik data terdekat dari tooltip
+        const active = chart.tooltip?._active;
+        if (active?.length) {
             active.forEach(pt => {
                 ctx.beginPath();
                 ctx.arc(pt.element.x, pt.element.y, 4, 0, Math.PI * 2);
@@ -334,10 +383,181 @@ const crosshairPlugin = {
                 ctx.stroke();
             });
         }
+
         ctx.restore();
     },
 };
 Chart.register(crosshairPlugin);
+
+function _zoomChartFocal(chart, mouseX, factor) {
+    const xScale = chart.scales?.x;
+    if (!xScale) return;
+
+    let minIdx = typeof xScale.min === 'number' ? xScale.min : (xScale.options.min ?? 0);
+    let maxIdx = typeof xScale.max === 'number' ? xScale.max : (xScale.options.max ?? ((chart.data?.labels?.length || 1) - 1));
+
+    const xVal = xScale.getValueForPixel(mouseX);
+    if (xVal == null || isNaN(xVal)) return;
+
+    let newXMin = xVal - (xVal - minIdx) * factor;
+    let newXMax = xVal + (maxIdx - xVal) * factor;
+
+    const totalPoints = chart.data?.labels?.length || 600;
+    if ((newXMax - newXMin) < 1.5) return;
+    if ((newXMax - newXMin) > totalPoints) {
+        newXMin = 0;
+        newXMax = totalPoints - 1;
+    }
+
+    newXMin = Math.max(0, newXMin);
+    newXMax = Math.min(totalPoints - 1, newXMax);
+
+    xScale.options.min = newXMin;
+    xScale.options.max = newXMax;
+
+    if (chart === realtimeChart) {
+        _userIsZoomed = true;
+        _updateResetZoomUI();
+    }
+    chart.update('none');
+}
+
+function _panChartPixels(chart, dx, dy = 0) {
+    const xScale = chart.scales?.x;
+    const yScale = chart.scales?.y;
+    if (!xScale) return;
+
+    let minIdx = typeof xScale.min === 'number' ? xScale.min : (xScale.options.min ?? 0);
+    let maxIdx = typeof xScale.max === 'number' ? xScale.max : (xScale.options.max ?? ((chart.data?.labels?.length || 1) - 1));
+
+    // Geser Sumbu X (Waktu)
+    if (dx !== 0) {
+        const xRange = maxIdx - minIdx;
+        const xPixelWidth = xScale.width || 1;
+        const xDelta = (dx / xPixelWidth) * xRange;
+
+        const totalPoints = chart.data?.labels?.length || 600;
+        let newMin = minIdx - xDelta;
+        let newMax = maxIdx - xDelta;
+
+        if (newMin < 0) {
+            newMin = 0;
+            newMax = xRange;
+        }
+        if (newMax > totalPoints - 1) {
+            newMax = totalPoints - 1;
+            newMin = newMax - xRange;
+        }
+
+        xScale.options.min = Math.max(0, newMin);
+        xScale.options.max = Math.min(totalPoints - 1, newMax);
+    }
+
+    // Geser Sumbu Y (Nilai Parameter) secara Manual
+    if (dy !== 0 && yScale) {
+        let yMin = typeof yScale.min === 'number' ? yScale.min : (yScale.options.min ?? 0);
+        let yMax = typeof yScale.max === 'number' ? yScale.max : (yScale.options.max ?? 10);
+        const yRange = yMax - yMin;
+        const yPixelHeight = yScale.height || 1;
+        const yDelta = (dy / yPixelHeight) * yRange;
+
+        yScale.options.min = yMin + yDelta;
+        yScale.options.max = yMax + yDelta;
+    }
+
+    if (chart === realtimeChart) {
+        _userIsZoomed = true;
+        _updateResetZoomUI();
+    }
+    chart.update('none');
+}
+
+function _initChartGestures(chart) {
+    if (!chart || !chart.canvas || chart.canvas._gestureInit) return;
+    const canvas = chart.canvas;
+    canvas._gestureInit = true;
+
+    let isDragging = false;
+    let dragStartX = 0;
+    let dragStartY = 0;
+
+    canvas.addEventListener('mousemove', (e) => {
+        const rect = canvas.getBoundingClientRect();
+        _mouseChartPos.x = e.clientX - rect.left;
+        _mouseChartPos.y = e.clientY - rect.top;
+        _mouseChartPos.active = true;
+        _mouseChartPos.chart = chart;
+
+        if (isDragging && chart) {
+            const dx = e.clientX - dragStartX;
+            const dy = e.clientY - dragStartY;
+            dragStartX = e.clientX;
+            dragStartY = e.clientY;
+            _panChartPixels(chart, dx, dy);
+        } else if (chart) {
+            chart.render();
+        }
+    });
+
+    canvas.addEventListener('mouseleave', () => {
+        if (_mouseChartPos.chart === chart) {
+            _mouseChartPos.active = false;
+            _mouseChartPos.chart = null;
+        }
+        if (isDragging) {
+            isDragging = false;
+            canvas.style.cursor = 'crosshair';
+        }
+        if (chart) chart.render();
+    });
+
+    canvas.addEventListener('mousedown', (e) => {
+        if (e.button !== 0) return;
+        e.preventDefault();
+        isDragging = true;
+        dragStartX = e.clientX;
+        dragStartY = e.clientY;
+        canvas.style.cursor = 'grabbing';
+    });
+
+    window.addEventListener('mouseup', () => {
+        if (isDragging) {
+            isDragging = false;
+            if (canvas) canvas.style.cursor = 'crosshair';
+        }
+    });
+
+    // Double-click pada grafik untuk reset zoom & auto-fit sumbu Y
+    canvas.addEventListener('dblclick', (e) => {
+        e.preventDefault();
+        if (chart === realtimeChart) {
+            resetChartZoom();
+        } else if (chart) {
+            if (chart.scales?.x?.options) {
+                delete chart.scales.x.options.min;
+                delete chart.scales.x.options.max;
+            }
+            if (chart.scales?.y?.options) {
+                delete chart.scales.y.options.min;
+                delete chart.scales.y.options.max;
+            }
+            chart.update('none');
+        }
+    });
+
+    canvas.addEventListener('wheel', (e) => {
+        if (!chart) return;
+        // Jika tidak menahan tombol Ctrl/Meta, biarkan halaman web di-scroll ke atas/bawah secara alami
+        const isZoom = e.ctrlKey || e.metaKey;
+        if (!isZoom) return;
+
+        e.preventDefault();
+        const rect = canvas.getBoundingClientRect();
+        const mouseX = e.clientX - rect.left;
+        const zoomFactor = Math.pow(1.0015, e.deltaY);
+        _zoomChartFocal(chart, mouseX, zoomFactor);
+    }, { passive: false });
+}
 const _ttDrag = { active: false, offX: 0, offY: 0, pinned: false };
 function _initTooltipDrag(el) {
     if (el._dragInit) return;
@@ -389,7 +609,7 @@ function iSolarTooltipHandler(context) {
         _ttDrag.pinned = false;
         return;
     }
-    const info = PARAM_INFO[selectedParameter];
+    const info = PARAM_INFO[selectedParameter] || {};
     const title = tooltip.title?.[0] || '';
     let html = `<div class="isc-tt-header"><span class="isc-tt-clock">🕐</span><span>${title}</span></div><div class="isc-tt-rows">`;
     (tooltip.dataPoints || []).forEach(dp => {
@@ -397,7 +617,7 @@ function iSolarTooltipHandler(context) {
         const color = dp.dataset.borderColor || dp.dataset.backgroundColor;
         const label = dp.dataset.label;
         const disp = val != null ? val.toFixed(2) : '—';
-        const unit = info.unit || '';
+        const unit = info.unit || (dp.chart.scales?.y?.options?.title?.text || '');
         html += `<div class="isc-tt-row">
             <span class="isc-tt-dot" style="background:${color}"></span>
             <span class="isc-tt-label">${label}</span>
@@ -841,6 +1061,7 @@ async function fetchChartDataFromServer() {
         }
     } catch (err) {
         console.error("Error fetching chart data:", err);
+        _fadeChartIn();
     }
 }
 function _attachHourlyListener(deviceId) {
@@ -1004,7 +1225,7 @@ function updateDateNavigatorUI() {
     const hiddenDate = document.getElementById('chartHiddenDate');
     if (!nav || !label || !hiddenDate) return;
 
-    if (timeFilter === 'all') {
+    if (timeFilter === 'all' || timeFilter === 'session') {
         nav.style.display = 'none';
         return;
     }
@@ -1098,6 +1319,16 @@ function setTimeFilter(filter) {
         canvas.style.transition = 'opacity 0.25s ease';
     }
 
+    const sessionSel = document.getElementById('chartSessionSelect');
+    if (sessionSel) {
+        sessionSel.style.display = filter === 'session' ? 'inline-block' : 'none';
+    }
+
+    const dashBatchNav = document.getElementById('dashChartBatchNav');
+    if (dashBatchNav && filter !== 'session') {
+        dashBatchNav.style.display = 'none';
+    }
+
     updateDateNavigatorUI();
 
     _userIsZoomed = false;
@@ -1111,8 +1342,80 @@ function setTimeFilter(filter) {
     _lastChartDay = now.getDate();
     if (filter === 'day' && selectedDeviceId) _attachHourlyListener(selectedDeviceId);
     if (filter === 'week' && selectedDeviceId) _attachDayListener(selectedDeviceId);
+    if (filter === 'session' && selectedDeviceId) loadChartSessionsDropdown();
 
     _rebuildChart(false);
+}
+
+async function loadChartSessionsDropdown() {
+    const sel = document.getElementById('chartSessionSelect');
+    if (!sel || !selectedDeviceId) return;
+    sel.innerHTML = '<option value="">Memuat Sesi...</option>';
+    try {
+        const res = await fetch(`/api/devices/${selectedDeviceId}/sessions`);
+        const list = await res.json();
+        if (!Array.isArray(list) || list.length === 0) {
+            sel.innerHTML = '<option value="">(Belum Ada Sesi Record)</option>';
+            sessionChartData = [];
+            sessionMeta = null;
+            if (realtimeChart) {
+                realtimeChart.data.labels = [];
+                realtimeChart.data.datasets = [];
+                realtimeChart.update('none');
+            }
+            return;
+        }
+
+        sel.innerHTML = list.map(s => {
+            const cnt = s.recordCount || 0;
+            const sName = s.name || s.id;
+            const sTime = s.startTime || '';
+            return `<option value="${s.id}">${sName} (${cnt} recs - ${sTime})</option>`;
+        }).join('');
+
+        const firstId = list[0].id;
+        sel.value = firstId;
+        await onChartSessionChange(firstId);
+    } catch (e) {
+        console.error("Error loading chart sessions dropdown:", e);
+        sel.innerHTML = '<option value="">Gagal Memuat Sesi</option>';
+    }
+}
+
+async function onChartSessionChange(sessionId, page = 'last') {
+    if (!sessionId) return;
+    _showChartSpinner();
+    try {
+        const res = await fetch(`/api/history/session-chart-data/${sessionId}?page_size=3000&page=${page}`);
+        const json = await res.json();
+        sessionMeta = json.meta || {};
+        sessionChartData = json.data || [];
+
+        if (timeFilter === 'session' && realtimeChart) {
+            const { labels, datasets } = getAllPhaseDatasets();
+            realtimeChart.data.labels = labels;
+            realtimeChart.data.datasets = datasets;
+            const { yMin, yMax } = getYBoundsMulti(datasets, selectedParameter);
+            realtimeChart.options.scales.y.min = yMin;
+            realtimeChart.options.scales.y.max = yMax;
+            realtimeChart.update('none');
+
+            const totalSlots = sessionMeta.totalTimeSlots || sessionChartData.length;
+            const totalPages = sessionMeta.totalPages || 1;
+            const currentPage = sessionMeta.page || page;
+            const pageSize = sessionMeta.pageSize || 3000;
+            const startNum = (currentPage - 1) * pageSize + 1;
+            const endNum = Math.min(currentPage * pageSize, totalSlots);
+
+            _renderBatchNav('dashChartBatchNav', currentPage, totalPages, startNum, endNum, totalSlots, (newPage) => {
+                onChartSessionChange(sessionId, newPage);
+            });
+        }
+    } catch (e) {
+        console.error("Error loading session chart data:", e);
+    } finally {
+        _fadeChartIn();
+    }
 }
 function _startAggRebuild() {
     if (_aggRebuildId) { clearInterval(_aggRebuildId); _aggRebuildId = null; }
@@ -1162,10 +1465,145 @@ function startTimeWindowMonitoring() {
     _startAggRebuild();
     _timeWindowCheckId = setInterval(_checkTimeWindowChange, 5_000);
 }
+
+function _renderBatchNav(containerId, page, totalPages, startNum, endNum, totalNum, onPageChangeFn) {
+    const el = document.getElementById(containerId);
+    if (!el) return;
+    if (!totalNum || totalNum === 0) {
+        el.style.display = 'none';
+        el.innerHTML = '';
+        return;
+    }
+    el.style.display = 'flex';
+    el.className = 'batch-nav-container';
+    el.innerHTML = `
+        <button class="batch-nav-btn" ${page <= 1 ? 'disabled' : ''} id="${containerId}_prev">
+            &#9668; Prev Batch
+        </button>
+        <div class="batch-nav-info">
+            Halaman <strong>${page}</strong> dari <strong>${totalPages}</strong> &middot; (Data <strong>${startNum.toLocaleString('id-ID')}</strong> - <strong>${endNum.toLocaleString('id-ID')}</strong> dari <strong>${totalNum.toLocaleString('id-ID')}</strong>)
+        </div>
+        <button class="batch-nav-btn" ${page >= totalPages ? 'disabled' : ''} id="${containerId}_next">
+            Next Batch &#9658;
+        </button>
+    `;
+    const prevBtn = document.getElementById(`${containerId}_prev`);
+    const nextBtn = document.getElementById(`${containerId}_next`);
+    if (prevBtn) prevBtn.onclick = (e) => { e.stopPropagation(); onPageChangeFn(page - 1); };
+    if (nextBtn) nextBtn.onclick = (e) => { e.stopPropagation(); onPageChangeFn(page + 1); };
+}
+
+function parseTimestampToDate(ts) {
+    if (!ts) return new Date();
+    if (ts instanceof Date) return ts;
+    if (typeof ts === 'number') return new Date(ts);
+    if (/^\d+$/.test(ts)) return new Date(parseInt(ts));
+
+    const str = String(ts).trim();
+
+    // 1. Format: DD/MM/YYYY HH:mm:ss or DD/MM/YYYY or DD-MM-YYYY
+    let m = str.match(/^(\d{1,2})[/.-](\d{1,2})[/.-](\d{4})(?:\s+(\d{1,2}):(\d{1,2})(?::(\d{1,2}))?)?/);
+    if (m) {
+        const day = parseInt(m[1], 10);
+        const month = parseInt(m[2], 10) - 1;
+        const year = parseInt(m[3], 10);
+        const hh = parseInt(m[4] || 0, 10);
+        const mm = parseInt(m[5] || 0, 10);
+        const ss = parseInt(m[6] || 0, 10);
+        return new Date(year, month, day, hh, mm, ss);
+    }
+
+    // 2. Format: HH:mm:ss DD/MM/YYYY or HH:mm:ss DD-MM-YYYY
+    m = str.match(/^(\d{1,2}):(\d{1,2})(?::(\d{1,2}))?\s+(\d{1,2})[/.-](\d{1,2})[/.-](\d{4})/);
+    if (m) {
+        const hh = parseInt(m[1], 10);
+        const mm = parseInt(m[2], 10);
+        const ss = parseInt(m[3] || 0, 10);
+        const day = parseInt(m[4], 10);
+        const month = parseInt(m[5], 10) - 1;
+        const year = parseInt(m[6], 10);
+        return new Date(year, month, day, hh, mm, ss);
+    }
+
+    // 3. Format: YYYY-MM-DD HH:mm:ss
+    m = str.match(/^(\d{4})[/.-](\d{1,2})[/.-](\d{1,2})(?:[T\s]+(\d{1,2}):(\d{1,2})(?::(\d{1,2}))?)?/);
+    if (m) {
+        const year = parseInt(m[1], 10);
+        const month = parseInt(m[2], 10) - 1;
+        const day = parseInt(m[3], 10);
+        const hh = parseInt(m[4] || 0, 10);
+        const mm = parseInt(m[5] || 0, 10);
+        const ss = parseInt(m[6] || 0, 10);
+        return new Date(year, month, day, hh, mm, ss);
+    }
+
+    const fallback = new Date(str);
+    return isNaN(fallback.getTime()) ? new Date() : fallback;
+}
+
+function _formatTimestampForChart(ts) {
+    if (!ts) return '';
+    try {
+        const d = parseTimestampToDate(ts);
+        if (isNaN(d.getTime())) return String(ts);
+        const _today = new Date();
+        const _isToday = d.getFullYear() === _today.getFullYear() &&
+            d.getMonth() === _today.getMonth() &&
+            d.getDate() === _today.getDate();
+        const _MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+        const _p = v => String(v).padStart(2, '0');
+        const timeStr = `${_p(d.getHours())}:${_p(d.getMinutes())}:${_p(d.getSeconds())}`;
+        return _isToday ? timeStr : `${d.getDate()} ${_MON[d.getMonth()]}, ${timeStr}`;
+    } catch (_) {
+        return String(ts);
+    }
+}
+
 function getAllPhaseDatasets() {
     const enabledKeys = _getEnabledPhaseKeys();
     const allPhases = enabledKeys.slice().sort((a, b) => parseInt(a.slice(1)) - parseInt(b.slice(1)));
     if (!allPhases.length) return { labels: [], datasets: [] };
+
+    if (timeFilter === 'session') {
+        if (!sessionChartData || !sessionChartData.length) {
+            return { labels: [], datasets: [] };
+        }
+        const labels = sessionChartData.map(item => _formatTimestampForChart(item.timestamp));
+        const fieldMap = { voltage: 'Voltage', current: 'Current', power: 'Power', frequency: 'Frequency', energy: 'Energy', powerFactor: 'PowerFactor' };
+        const field = fieldMap[selectedParameter] || 'Voltage';
+
+        const sessionPhases = (sessionMeta && sessionMeta.phases && sessionMeta.phases.length > 0)
+            ? sessionMeta.phases
+            : allPhases;
+
+        const datasets = sessionPhases.map(phase => {
+            const colors = getPhaseColors(phase);
+            const phaseCustomName = (sessionMeta && sessionMeta.phaseNames && sessionMeta.phaseNames[phase])
+                ? sessionMeta.phaseNames[phase]
+                : getPhaseLabel(phase);
+            const values = sessionChartData.map(item => {
+                const pd = item.data?.[phase];
+                if (!pd || pd.offline) return null;
+                return pd[field] != null ? parseFloat(pd[field]) : null;
+            });
+            return {
+                label: (phaseCustomName && phaseCustomName !== phase) ? `${phase} (${phaseCustomName})` : phase,
+                data: values,
+                borderColor: colors.line,
+                backgroundColor: colors.light,
+                borderWidth: 2,
+                tension: 0.2,
+                spanGaps: true,
+                fill: false,
+                pointRadius: sessionChartData.length > 150 ? 0 : 2,
+                pointHoverRadius: 5,
+                hidden: _hiddenPhases.has(phase),
+                type: 'line',
+                _phaseKey: phase,
+            };
+        });
+        return { labels, datasets };
+    }
 
     let labels;
     let getValues;
@@ -1467,6 +1905,7 @@ function initChart() {
             },
         },
     });
+    _initChartGestures(realtimeChart);
     if (_clipPathCleanupId) {
         clearTimeout(_clipPathCleanupId);
         _clipPathCleanupId = null;
@@ -1490,6 +1929,7 @@ function initChart() {
     ctx.addEventListener('mouseleave', () => {
         if (!_ttDrag.active && !_ttDrag.pinned) hideIscTooltip();
     });
+    _initChartGestures(realtimeChart);
 }
 const CHART_INTERVAL_MS = 5000;
 let _chartTimer = null;
@@ -1724,7 +2164,8 @@ async function _chartInit(deviceId) {
             _appendChartPoint(point);
         }
     } catch (e) {
-        if (seq !== _chartInitSeq) return; // abort jika ada init lebih baru
+        console.error("Error in _chartInit:", e);
+        if (seq !== _chartInitSeq) return;
         if (!cache) {
             const interval = typeof CHART_INTERVAL_MS !== 'undefined' ? CHART_INTERVAL_MS : 5000;
             for (let ts = now - _visiblePoints * interval; ts <= now; ts += interval) {
@@ -2999,7 +3440,103 @@ function toggleSessionDetail(sessionId) {
 const _sessionSelectedParam = {};
 const _sessionSelectedPhase = {};
 const _sessionSelectedPage = {};
+const _sessionTimeFilter = {};
 const _sessionCharts = {};
+
+function setSessionTimeFilter(sessionId, filter) {
+    _sessionTimeFilter[sessionId] = filter;
+    _sessionSelectedPage[sessionId] = 1;
+    const container = $(`session-dash_${sessionId}`);
+    if (container) {
+        const btnSesi = container.querySelector(`[onclick*="'session'"]`);
+        const btnDay = container.querySelector(`[onclick*="'day'"]`);
+        const btnWeek = container.querySelector(`[onclick*="'week'"]`);
+        if (btnSesi) btnSesi.classList.toggle('active', filter === 'session');
+        if (btnDay) btnDay.classList.toggle('active', filter === 'day');
+        if (btnWeek) btnWeek.classList.toggle('active', filter === 'week');
+    }
+    renderSessionChart(sessionId);
+}
+
+let activeOfflineTimeFilter = 'session';
+
+function setOwTimeFilter(filter) {
+    activeOfflineTimeFilter = filter;
+    activeOfflineSelectedPage = 1;
+    ['session', 'day', 'week'].forEach(f => {
+        const btn = document.getElementById(`owFilter_${f}`);
+        if (btn) btn.classList.toggle('active', f === filter);
+    });
+    renderOfflineChart();
+}
+
+function aggregateRecordsByTime(recordsMap, phases, param, mode) {
+    const allTimestampsSet = new Set();
+    phases.forEach(p => {
+        const records = recordsMap[p.phase] || [];
+        records.forEach(r => { if (r.timestamp) allTimestampsSet.add(r.timestamp); });
+    });
+    const sortedTimestamps = Array.from(allTimestampsSet).sort((a, b) => parseTimestampToEpoch(a) - parseTimestampToEpoch(b));
+
+    if (mode === 'session' || !mode) {
+        return { sortedTimestamps, recordsMap };
+    }
+
+    const _p = v => String(v).padStart(2, '0');
+    const getBucketKey = (ts) => {
+        const d = parseTimestampToDate(ts);
+        if (isNaN(d.getTime())) return null;
+
+        if (mode === 'day') {
+            const m = Math.floor(d.getMinutes() / 15) * 15;
+            return `${d.getFullYear()}-${_p(d.getMonth() + 1)}-${_p(d.getDate())} ${_p(d.getHours())}:${_p(m)}`;
+        } else if (mode === 'week') {
+            return `${d.getFullYear()}-${_p(d.getMonth() + 1)}-${_p(d.getDate())}`;
+        }
+        return null;
+    };
+
+    const bucketSet = new Set();
+    const aggData = {};
+
+    phases.forEach(p => {
+        const ph = p.phase;
+        aggData[ph] = {};
+        const records = recordsMap[ph] || [];
+        records.forEach(r => {
+            if (!r.timestamp) return;
+            const bk = getBucketKey(r.timestamp);
+            if (!bk) return;
+            bucketSet.add(bk);
+            if (!aggData[ph][bk]) aggData[ph][bk] = { sum: 0, count: 0 };
+            const v = r[param];
+            if (v != null && !isNaN(v)) {
+                aggData[ph][bk].sum += parseFloat(v);
+                aggData[ph][bk].count += 1;
+            }
+        });
+    });
+
+    const sortedBuckets = Array.from(bucketSet).sort((a, b) => {
+        const epA = Date.parse(a.replace(/-/g, '/')) || 0;
+        const epB = Date.parse(b.replace(/-/g, '/')) || 0;
+        return epA - epB;
+    });
+
+    const aggregatedRecordsMap = {};
+    phases.forEach(p => {
+        const ph = p.phase;
+        aggregatedRecordsMap[ph] = sortedBuckets.map(bk => {
+            const entry = aggData[ph]?.[bk];
+            const avgVal = (entry && entry.count > 0) ? (entry.sum / entry.count) : null;
+            const obj = { timestamp: bk };
+            obj[param] = avgVal != null ? parseFloat(avgVal.toFixed(4)) : null;
+            return obj;
+        });
+    });
+
+    return { sortedTimestamps: sortedBuckets, recordsMap: aggregatedRecordsMap };
+}
 
 const _activeHistoryFetches = new Set();
 const _activeHistoryCallbacks = {};
@@ -3065,18 +3602,26 @@ function renderSessionDashboard(sessionId) {
                     <h5 style="margin:0; font-size:13px; font-weight:800; color:var(--text-primary)">Grafik Telemetri Sesi</h5>
                     <p style="margin:2px 0 0; font-size:11px; color:var(--text-tertiary)">Visualisasi perbandingan seluruh sensor</p>
                 </div>
-                <select id="paramSelect_${sessionId}" class="param-select" style="width:130px" onchange="onSessionParamChange('${sessionId}')">
-                    <option value="Power">Power (W)</option>
-                    <option value="Voltage">Voltage (V)</option>
-                    <option value="Current">Current (A)</option>
-                    <option value="Frequency">Frequency (Hz)</option>
-                    <option value="Energy">Energy (kWh)</option>
-                    <option value="PowerFactor">Power Factor</option>
-                </select>
+                <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap">
+                    <div class="time-filter-group" style="scale:0.85; transform-origin:right center;">
+                        <button class="time-filter-btn ${(_sessionTimeFilter[sessionId] || 'session') === 'session' ? 'active' : ''}" onclick="setSessionTimeFilter('${sessionId}', 'session')">Sesi</button>
+                        <button class="time-filter-btn ${(_sessionTimeFilter[sessionId] || 'session') === 'day' ? 'active' : ''}" onclick="setSessionTimeFilter('${sessionId}', 'day')">Day (15m)</button>
+                        <button class="time-filter-btn ${(_sessionTimeFilter[sessionId] || 'session') === 'week' ? 'active' : ''}" onclick="setSessionTimeFilter('${sessionId}', 'week')">Week (1d)</button>
+                    </div>
+                    <select id="paramSelect_${sessionId}" class="param-select" style="width:130px" onchange="onSessionParamChange('${sessionId}')">
+                        <option value="Power">Power (W)</option>
+                        <option value="Voltage">Voltage (V)</option>
+                        <option value="Current">Current (A)</option>
+                        <option value="Frequency">Frequency (Hz)</option>
+                        <option value="Energy">Energy (kWh)</option>
+                        <option value="PowerFactor">Power Factor</option>
+                    </select>
+                </div>
             </div>
             <div style="height:220px; position:relative; width:100%">
                 <canvas id="chart_${sessionId}"></canvas>
             </div>
+            <div id="sessionBatchNav_${sessionId}" style="display:none"></div>
         </div>
 
         <div class="session-dashboard-card" style="background:var(--surface); border:1px solid var(--border); border-radius:var(--radius-md) 0 var(--radius-md) 0; padding:16px;">
@@ -3158,24 +3703,29 @@ function renderSessionChart(sessionId) {
 
     const phases = session.computedPhases || [];
     const activeParam = _sessionSelectedParam[sessionId] || 'Power';
+    const filterMode = _sessionTimeFilter[sessionId] || 'session';
 
-    const allTimestampsSet = new Set();
-    phases.forEach(p => {
-        const records = recordsBySession[sessionId]?.[p.phase] || [];
-        records.forEach(r => {
-            if (r.timestamp) allTimestampsSet.add(r.timestamp);
-        });
+    const rawRecordsMap = recordsBySession[sessionId] || {};
+    const { sortedTimestamps, recordsMap } = aggregateRecordsByTime(rawRecordsMap, phases, activeParam, filterMode);
+
+    const totalSlots = sortedTimestamps.length;
+    const batchSize = 3000;
+    const totalPages = Math.ceil(totalSlots / batchSize) || 1;
+    if (!_sessionSelectedPage[sessionId]) _sessionSelectedPage[sessionId] = totalPages;
+    const currentPage = Math.min(Math.max(1, _sessionSelectedPage[sessionId]), totalPages);
+    _sessionSelectedPage[sessionId] = currentPage;
+
+    const startIdx = (currentPage - 1) * batchSize;
+    const endIdx = startIdx + batchSize;
+    const chartLabels = sortedTimestamps.slice(startIdx, endIdx);
+
+    _renderBatchNav(`sessionBatchNav_${sessionId}`, currentPage, totalPages, startIdx + 1, Math.min(endIdx, totalSlots), totalSlots, (newPage) => {
+        _sessionSelectedPage[sessionId] = newPage;
+        renderSessionChart(sessionId);
     });
 
-    const sortedTimestamps = Array.from(allTimestampsSet).sort((a, b) => parseTimestampToEpoch(a) - parseTimestampToEpoch(b));
-    let chartLabels = sortedTimestamps;
-    if (chartLabels.length > 120) {
-        const step = Math.ceil(chartLabels.length / 120);
-        chartLabels = chartLabels.filter((_, idx) => idx % step === 0);
-    }
-
     const datasets = phases.map((p, idx) => {
-        const records = recordsBySession[sessionId]?.[p.phase] || [];
+        const records = recordsMap[p.phase] || [];
         const dataMap = {};
         records.forEach(r => {
             if (r.timestamp) dataMap[r.timestamp] = r;
@@ -3205,7 +3755,7 @@ function renderSessionChart(sessionId) {
     _sessionCharts[sessionId] = new Chart(ctx, {
         type: 'line',
         data: {
-            labels: chartLabels.map(ts => ts.split(' ')[1] || ts),
+            labels: chartLabels.map(ts => _formatTimestampForChart(ts)),
             datasets: datasets
         },
         options: {
@@ -3222,6 +3772,8 @@ function renderSessionChart(sessionId) {
                     }
                 },
                 tooltip: {
+                    enabled: false,
+                    external: iSolarTooltipHandler,
                     mode: 'index',
                     intersect: false
                 }
@@ -3251,6 +3803,7 @@ function renderSessionChart(sessionId) {
             }
         }
     });
+    _initChartGestures(_sessionCharts[sessionId]);
 }
 
 function renderSessionTable(sessionId) {
@@ -3750,9 +4303,28 @@ async function syncCaptureStatus() {
             } else {
                 buildSessionUI(); // render ulang dengan recordCount terbaru dari status
             }
-            await _refreshActiveSessionRecords();
+        }
+        const recBadge = $('recordingBadge');
+        const recInfo = $('recBadgeInfo');
+        if (recBadge) {
+            if (status.active) {
+                recBadge.style.display = 'flex';
+                if (recInfo) {
+                    const ivStr = status.interval ? `${status.interval}s` : '15s';
+                    const cntStr = status.count != null ? `${status.count} recs` : '';
+                    const sName = status.session_name || 'Rekaman';
+                    recInfo.textContent = `${sName} (${ivStr} · ${cntStr})`;
+                }
+            } else {
+                recBadge.style.display = 'none';
+            }
         }
     } catch (e) { }
+}
+
+async function quickStopCapture() {
+    const confirmed = await showModal('Hentikan Rekaman', 'Hentikan sesi rekaman yang sedang berlangsung?\n\nData sudah tersimpan di database.', 'warning', ['confirm']);
+    if (confirmed) await _apiStopCapture();
 }
 function _startStatusPolling() {
     if (_captureStatusPollId) return;
@@ -4097,9 +4669,8 @@ async function handleOfflineUpload(event) {
 function parseTimestampToEpoch(ts) {
     if (!ts) return Date.now();
     try {
-        const cleanTs = ts.replace(/-/g, '/');
-        const epoch = Date.parse(cleanTs);
-        return isNaN(epoch) ? Date.now() : epoch;
+        const d = parseTimestampToDate(ts);
+        return d.getTime();
     } catch (e) {
         return Date.now();
     }
@@ -4334,25 +4905,30 @@ function renderOfflineChart() {
 
     if (!activeOfflineSessionData) return;
 
-    // Collect all timestamps to build a common X-axis
-    const allTimestampsSet = new Set();
-    Object.values(activeOfflineSessionData.records).forEach(arr => {
-        arr.forEach(r => {
-            if (r.timestamp) allTimestampsSet.add(r.timestamp);
-        });
+    const param = $('owParamSelect')?.value || 'Power';
+    const filterMode = activeOfflineTimeFilter || 'session';
+
+    const rawRecordsMap = activeOfflineSessionData.records || {};
+    const phases = (activeOfflineSessionData.session.phases || []).map(ph => ({ phase: ph, name: ph }));
+    const { sortedTimestamps, recordsMap } = aggregateRecordsByTime(rawRecordsMap, phases, param, filterMode);
+
+    const totalSlots = sortedTimestamps.length;
+    const batchSize = 3000;
+    const totalPages = Math.ceil(totalSlots / batchSize) || 1;
+    const currentPage = Math.min(Math.max(1, activeOfflineSelectedPage || 1), totalPages);
+    activeOfflineSelectedPage = currentPage;
+
+    const startIdx = (currentPage - 1) * batchSize;
+    const endIdx = startIdx + batchSize;
+    const chartLabels = sortedTimestamps.slice(startIdx, endIdx);
+
+    _renderBatchNav('owChartBatchNav', currentPage, totalPages, startIdx + 1, Math.min(endIdx, totalSlots), totalSlots, (newPage) => {
+        activeOfflineSelectedPage = newPage;
+        renderOfflineChart();
     });
 
-    const sortedTimestamps = Array.from(allTimestampsSet).sort((a, b) => parseTimestampToEpoch(a) - parseTimestampToEpoch(b));
-    let chartLabels = sortedTimestamps;
-    if (chartLabels.length > 120) {
-        const step = Math.ceil(chartLabels.length / 120);
-        chartLabels = chartLabels.filter((_, idx) => idx % step === 0);
-    }
-
-    const param = $('owParamSelect')?.value || 'Power';
-
-    const datasets = activeOfflineSessionData.session.phases.map((ph, idx) => {
-        const records = activeOfflineSessionData.records[ph] || [];
+    const datasets = phases.map((p, idx) => {
+        const records = recordsMap[p.phase] || [];
         const dataMap = {};
         records.forEach(r => {
             if (r.timestamp) dataMap[r.timestamp] = r;
@@ -4360,14 +4936,14 @@ function renderOfflineChart() {
 
         const dataPoints = chartLabels.map(ts => {
             const rec = dataMap[ts];
-            return rec ? (rec[param] != null ? rec[param] : 0) : null;
+            return rec ? (rec[param] != null ? rec[param] : null) : null;
         });
 
         const phaseColors = ['#00A651', '#1E90FF', '#FF8C00', '#8A2BE2', '#FF1493', '#00CED1'];
         const color = phaseColors[idx % phaseColors.length];
 
         return {
-            label: ph,
+            label: p.name,
             data: dataPoints,
             borderColor: color,
             backgroundColor: color + '0a',
@@ -4382,7 +4958,7 @@ function renderOfflineChart() {
     activeOfflineChart = new Chart(ctx, {
         type: 'line',
         data: {
-            labels: chartLabels.map(ts => ts.split(' ')[1] || ts),
+            labels: chartLabels.map(ts => _formatTimestampForChart(ts)),
             datasets: datasets
         },
         options: {
@@ -4399,6 +4975,8 @@ function renderOfflineChart() {
                     }
                 },
                 tooltip: {
+                    enabled: false,
+                    external: iSolarTooltipHandler,
                     mode: 'index',
                     intersect: false
                 }
@@ -4428,6 +5006,7 @@ function renderOfflineChart() {
             }
         }
     });
+    _initChartGestures(activeOfflineChart);
 }
 
 function renderOfflineTable() {
@@ -4495,11 +5074,16 @@ document.addEventListener('DOMContentLoaded', async () => {
         card.addEventListener('click', () => _switchParameter(card.dataset.param));
         card.classList.toggle('card-active', card.dataset.param === selectedParameter);
     });
-    await loadDevices();
-    const globalLoader = document.getElementById('globalLoader');
-    if (globalLoader) {
-        globalLoader.classList.add('hidden');
-        setTimeout(() => globalLoader.style.display = 'none', 500);
+    try {
+        await loadDevices();
+    } catch (err) {
+        console.error("Error loading devices in init:", err);
+    } finally {
+        const globalLoader = document.getElementById('globalLoader');
+        if (globalLoader) {
+            globalLoader.classList.add('hidden');
+            setTimeout(() => globalLoader.style.display = 'none', 500);
+        }
     }
     setInterval(loadDevices, 30_000);
     setInterval(_saveChartCache, 60_000); // auto-save chart cache tiap 60 detik
