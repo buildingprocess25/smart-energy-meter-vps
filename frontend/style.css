@@ -407,18 +407,18 @@ body {
     flex: 1; min-height: 0; display: flex; flex-direction: column;
     border-bottom: 3px solid var(--yellow) !important;
 }
-.chart-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; flex-wrap: nowrap; gap: 12px; flex-shrink: 0; }
-.chart-header h3 { font-size: 11px !important; font-weight: 800 !important; color: var(--text-tertiary) !important; letter-spacing: 1.2px !important; text-transform: uppercase !important; font-family: var(--font-ui) !important; align-self: center; white-space: nowrap; flex-shrink: 0; }
-.chart-header-right { display: flex; flex-direction: row; gap: 8px; align-items: center; justify-content: flex-end; flex-wrap: nowrap; }
-.chart-controls { display: flex; gap: 8px; align-items: center; flex-wrap: nowrap; justify-content: flex-end; }
-.chart-phase-toggles { display: flex; gap: 6px; align-items: center; flex-wrap: nowrap; }
+.chart-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 10px; flex-shrink: 0; }
+.chart-header h3 { font-size: 11px !important; font-weight: 800 !important; color: var(--text-tertiary) !important; letter-spacing: 1.2px !important; text-transform: uppercase !important; font-family: var(--font-ui) !important; align-self: flex-start; margin-top: 6px; white-space: nowrap; flex-shrink: 0; }
+.chart-header-right { display: flex; flex-direction: column; gap: 6px; align-items: flex-end; }
+.chart-controls { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
+.chart-phase-toggles { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
 .phase-toggle-btn {
-    display: inline-flex; align-items: center; gap: 6px;
-    padding: 6px 10px; border: 1.5px solid var(--border);
+    display: inline-flex; align-items: center; gap: 5px;
+    padding: 4px 9px; border: 1.5px solid var(--border);
     border-radius: var(--radius-md); background: transparent;
     color: var(--text-tertiary); font-family: var(--font-ui);
-    font-size: 11.5px; font-weight: 700; cursor: pointer;
-    transition: all 0.2s ease; opacity: 0.5; white-space: nowrap; flex-shrink: 0;
+    font-size: 11px; font-weight: 700; cursor: pointer;
+    transition: all 0.2s ease; opacity: 0.5; white-space: nowrap;
 }
 .phase-toggle-btn:hover { opacity: 0.8; }
 .phase-toggle-btn.active {

@@ -209,13 +209,6 @@
                                             <button class="time-filter-btn" data-filter="session"
                                                 onclick="setTimeFilter('session')">Session</button>
                                         </div>
-                                    </div>
-                                    <div class="chart-controls">
-                                        <select id="chartSessionSelect" class="chart-session-select" style="display:none;"
-                                            onchange="onChartSessionChange(this.value)">
-                                            <option value="">Memuat Sesi...</option>
-                                        </select>
-                                        <div id="chartPhaseToggles" class="chart-phase-toggles"></div>
                                         <select id="parameterSelect" class="parameter-select"
                                             onchange="changeParameter()">
                                             <option value="voltage">Voltage (V)</option>
@@ -225,6 +218,13 @@
                                             <option value="energy">Energy (kWh)</option>
                                             <option value="powerFactor">Power Factor</option>
                                         </select>
+                                    </div>
+                                    <div class="chart-controls">
+                                        <select id="chartSessionSelect" class="chart-session-select" style="display:none;"
+                                            onchange="onChartSessionChange(this.value)">
+                                            <option value="">Memuat Sesi...</option>
+                                        </select>
+                                        <div id="chartPhaseToggles" class="chart-phase-toggles"></div>
                                     </div>
                                 </div>
                             </div>
