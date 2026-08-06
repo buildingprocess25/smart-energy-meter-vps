@@ -407,18 +407,18 @@ body {
     flex: 1; min-height: 0; display: flex; flex-direction: column;
     border-bottom: 3px solid var(--yellow) !important;
 }
-.chart-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; flex-wrap: wrap; gap: 10px; flex-shrink: 0; }
-.chart-header h3 { font-size: 11px !important; font-weight: 800 !important; color: var(--text-tertiary) !important; letter-spacing: 1.2px !important; text-transform: uppercase !important; font-family: var(--font-ui) !important; align-self: center; }
-.chart-header-right { display: flex; flex-direction: row; gap: 8px; align-items: center; justify-content: flex-end; flex-wrap: wrap; }
-.chart-controls { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
-.chart-phase-toggles { display: flex; gap: 6px; align-items: center; margin-right: 4px; }
+.chart-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; flex-wrap: nowrap; gap: 12px; flex-shrink: 0; }
+.chart-header h3 { font-size: 11px !important; font-weight: 800 !important; color: var(--text-tertiary) !important; letter-spacing: 1.2px !important; text-transform: uppercase !important; font-family: var(--font-ui) !important; align-self: center; white-space: nowrap; flex-shrink: 0; }
+.chart-header-right { display: flex; flex-direction: row; gap: 8px; align-items: center; justify-content: flex-end; flex-wrap: nowrap; }
+.chart-controls { display: flex; gap: 8px; align-items: center; flex-wrap: nowrap; justify-content: flex-end; }
+.chart-phase-toggles { display: flex; gap: 6px; align-items: center; flex-wrap: nowrap; }
 .phase-toggle-btn {
     display: inline-flex; align-items: center; gap: 6px;
     padding: 6px 10px; border: 1.5px solid var(--border);
     border-radius: var(--radius-md); background: transparent;
     color: var(--text-tertiary); font-family: var(--font-ui);
     font-size: 11.5px; font-weight: 700; cursor: pointer;
-    transition: all 0.2s ease; opacity: 0.5;
+    transition: all 0.2s ease; opacity: 0.5; white-space: nowrap; flex-shrink: 0;
 }
 .phase-toggle-btn:hover { opacity: 0.8; }
 .phase-toggle-btn.active {
@@ -566,7 +566,7 @@ body {
 @keyframes spin { 100% { transform: rotate(360deg); } }
 .chart-container canvas { width: 100% !important; height: 100% !important; cursor: grab; }
 .chart-container canvas:active { cursor: grabbing !important; }
-.time-filter-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; justify-content: flex-end; }
+.time-filter-row { display: flex; align-items: center; gap: 10px; flex-wrap: nowrap; justify-content: flex-end; flex-shrink: 0; }
 .isolar-date-navigator {
     display: flex;
     align-items: center;
