@@ -208,6 +208,9 @@ def init_db():
                     cur.execute("SELECT column_name FROM information_schema.columns WHERE table_name='history' AND column_name='phase_name';")
                     if not cur.fetchone():
                         cur.execute("ALTER TABLE history ADD COLUMN phase_name VARCHAR(100) DEFAULT NULL;")
+                    cur.execute("SELECT column_name FROM information_schema.columns WHERE table_name='history' AND column_name='device_name';")
+                    if not cur.fetchone():
+                        cur.execute("ALTER TABLE history ADD COLUMN device_name VARCHAR(100) DEFAULT NULL;")
                     def create_index_safe(idx_name, create_sql):
                         cur.execute("SELECT 1 FROM pg_indexes WHERE indexname = %s", (idx_name,))
                         if not cur.fetchone():
@@ -626,6 +629,7 @@ def _do_capture_io(device_id, session_id, sched_ts, interval, last_hash, last_ch
         with _capture_lock:
             sname = _capture_state.get('session_name') or 'Rekaman'
             sensor_names = _capture_state.get('sensor_names') or {}
+            dev_name = _capture_state.get('device_name') or device_id
             
         phases = enabled_phases if enabled_phases else sorted([k for k in (raw or {}) if _PHASE_RE.match(k)], key=lambda x: int(x[1:]))
         if not phases: return
@@ -641,13 +645,13 @@ def _do_capture_io(device_id, session_id, sched_ts, interval, last_hash, last_ch
                     INSERT INTO history (
                         device_id, phase, timestamp, epoch,
                         voltage, current, power, frequency, energy, power_factor,
-                        offline, session_id, session_name, phase_name
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        offline, session_id, session_name, phase_name, device_name
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """, (
                     device_id, ph, ts, epoch_val,
                     f('Voltage (V)'), f('Current (A)'), f('Power (W)'),
                     f('Frequency (Hz)'), f('Active Energy (kWh)'), f('Power Factor'),
-                    phase_offline, session_id, sname, sensor_names.get(ph, ph)
+                    phase_offline, session_id, sname, sensor_names.get(ph, ph), dev_name
                 ))
                 
         with _capture_lock:
@@ -847,6 +851,14 @@ def rename_device(device_id: str):
                 VALUES (%s, %s, FALSE, '---')
                 ON CONFLICT (id) DO UPDATE SET name = %s;
             """, (device_id, name, name))
+            
+            with _capture_lock:
+                if _capture_state.get('active') and _capture_state.get('device_id') == device_id:
+                    _capture_state['device_name'] = name
+                    active_sid = _capture_state.get('session_id')
+                    if active_sid:
+                        cur.execute("UPDATE history SET device_name = %s WHERE session_id = %s", (name, active_sid))
+
         return jsonify({'ok': True, 'name': name, 'timestamp': int(time.time() * 1000)})
     except Exception as e:
         return jsonify({'ok': False, 'error': str(e)}), 500
@@ -1172,7 +1184,8 @@ def get_sessions(device_id: str):
                        (SELECT timestamp FROM history h3 WHERE h3.session_id = h.session_id ORDER BY h3.epoch DESC LIMIT 1) as end_time,
                        COUNT(*) as record_count,
                        MIN(epoch) as start_epoch,
-                       ARRAY_AGG(DISTINCT phase ORDER BY phase) as phases
+                       ARRAY_AGG(DISTINCT phase ORDER BY phase) as phases,
+                       MAX(device_name) as snapshot_device_name
                 FROM history h
                 WHERE device_id = %s
                 GROUP BY session_id, session_name
@@ -1180,14 +1193,14 @@ def get_sessions(device_id: str):
             """, (device_id,))
             rows = cur.fetchall()
 
-        # Ambil nama device dari database
-        device_name = device_id
+        # Ambil nama device dari database sebagai fallback data lama
+        current_device_name = device_id
         try:
             with get_db_cursor() as cur:
                 cur.execute("SELECT name FROM devices WHERE id = %s", (device_id,))
                 dev_row = cur.fetchone()
-                if dev_row:
-                    device_name = dev_row[0]
+                if dev_row and dev_row[0]:
+                    current_device_name = dev_row[0]
         except Exception:
             pass
 
@@ -1211,7 +1224,7 @@ def get_sessions(device_id: str):
 
         sessions = []
         for row in rows:
-            sid, sname, start_time, end_time, count, start_epoch, phases_arr = row
+            sid, sname, start_time, end_time, count, start_epoch, phases_arr, snapshot_dname = row
             # phases_arr adalah list dari PostgreSQL ARRAY_AGG, misal ['L1','L2','L3']
             phases_list = sorted(phases_arr or [], key=lambda x: int(x[1:]) if x[1:].isdigit() else 0)
             sessions.append({
@@ -1222,7 +1235,7 @@ def get_sessions(device_id: str):
                 'recordCount': count,
                 'startTimestamp': start_epoch,
                 'deviceId': device_id,
-                'deviceName': device_name,
+                'deviceName': snapshot_dname or current_device_name,
                 'phases': phases_list,           # ['L1', 'L2', 'L3']
                 'phaseNames': session_phase_names.get(sid, {ph: ph for ph in phases_list}),
             })

@@ -3208,7 +3208,7 @@ function clearDbSearch() {
     input?.focus();
 }
 let historyData = [], recordsBySession = {};
-async function _attachHistoryListener(deviceId) {
+async function _attachHistoryListener(deviceId, isAutoPoll = false) {
     try {
         const res = await fetch(`/api/devices/${deviceId}/sessions`);
         const list = await res.json();
@@ -3221,7 +3221,7 @@ async function _attachHistoryListener(deviceId) {
             totalCount += meta.recordCount || 0;
         });
         historyData = Array(totalCount).fill(1);
-        buildSessionUI();
+        buildSessionUI(isAutoPoll);
     } catch (err) {
         console.error("Error loading sessions:", err);
     }
@@ -3257,7 +3257,11 @@ function _highlight(text, query = dbSearchQuery) {
     if (!query) return text;
     return text.replace(new RegExp(`(${query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi'), '<mark class="search-highlight">$1</mark>');
 }
-function buildSessionUI() {
+function buildSessionUI(isAutoPoll = false) {
+    // 1. Jika auto-poll berkala dan user sedang membuka menu dropdown 3 titik: tunda refresh UI agar menu tidak tertutup!
+    const isAnyDropdownOpen = Array.from(document.querySelectorAll('.session-dropdown-menu')).some(el => el.style.display === 'block');
+    if (isAutoPoll && isAnyDropdownOpen) return;
+
     const allSessions = Object.values(sessionsData).sort((a, b) => (b.startTimestamp || 0) - (a.startTimestamp || 0));
     const filtered = dbSearchQuery ? allSessions.filter(s => (s.name || s.id || '').toLowerCase().includes(dbSearchQuery)) : allSessions;
     if (DOM.historyCount) {
@@ -3271,6 +3275,20 @@ function buildSessionUI() {
         tbody.innerHTML = `<tr><td colspan="5" class="loading-cell">${dbSearchQuery ? 'Tidak ada sesi yang cocok.' : 'Belum ada data rekaman'}</td></tr>`;
         return;
     }
+    
+    // 2. Jika auto-poll berkala dan tabel sudah ada, cukup perbarui angka recordCount di tempat
+    //    agar DOM tidak di-wipe & zoom level grafik detail yang sedang dibuka pengguna tidak ter-reset!
+    if (isAutoPoll && tbody.children.length > 0) {
+        filtered.forEach(session => {
+            const row = document.getElementById(`detail_${session.id}`)?.previousElementSibling;
+            const countBadge = row?.querySelector('.record-count-badge');
+            if (countBadge) {
+                countBadge.textContent = `${session.recordCount || 0} record`;
+            }
+        });
+        return;
+    }
+
     const openSessions = new Set();
     document.querySelectorAll('.session-detail-row').forEach(row => { if (row.style.display !== 'none') openSessions.add(row.id.replace('detail_', '')); });
     
@@ -3333,7 +3351,7 @@ function buildSessionUI() {
             </td>
             <td class="session-name-cell">
                 <span class="session-name">${_highlight(session.name || 'Tanpa nama')}</span>
-                ${liveDeviceName && liveDeviceName !== session.deviceId ? `<span style="font-size:10px;color:var(--text-tertiary);margin-left:4px">· ${liveDeviceName}</span>` : ''}
+                ${(session.deviceName || liveDeviceName) && (session.deviceName || liveDeviceName) !== session.deviceId ? `<span style="font-size:10.5px;color:var(--text-tertiary);margin-left:6px;font-weight:600">· ${session.deviceName || liveDeviceName}</span>` : ''}
                 ${isActive ? '<span class="session-live-badge">&#9679; LIVE</span>' : ''}
                 ${session.isOfflineBackup ? '<span class="session-live-badge" style="background:rgba(147,51,234,0.1);color:#9333ea;border-color:rgba(147,51,234,0.25)">&#9679; OFFLINE VIEW</span>' : ''}
             </td>
@@ -4308,9 +4326,9 @@ async function syncCaptureStatus() {
         if (captureActive && selectedDeviceId) {
             if (now - _lastHistoryRefresh > _HISTORY_REFRESH_MS) {
                 _lastHistoryRefresh = now;
-                await _attachHistoryListener(selectedDeviceId);
+                await _attachHistoryListener(selectedDeviceId, true);
             } else {
-                buildSessionUI(); // render ulang dengan recordCount terbaru dari status
+                buildSessionUI(true); // render ulang halus dengan isAutoPoll = true
             }
         }
         const recBadge = $('recordingBadge');
