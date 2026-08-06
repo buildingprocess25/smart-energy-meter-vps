@@ -3276,14 +3276,20 @@ function buildSessionUI(isAutoPoll = false) {
         return;
     }
     
-    // 2. Jika auto-poll berkala dan tabel sudah ada, cukup perbarui angka recordCount di tempat
-    //    agar DOM tidak di-wipe & zoom level grafik detail yang sedang dibuka pengguna tidak ter-reset!
-    if (isAutoPoll && tbody.children.length > 0) {
+    // 2. Hitung jumlah baris sesi (bukan detail row) yang ada di DOM saat ini
+    const existingRowCount = tbody.querySelectorAll('.session-row').length;
+
+    // 3. Jika ini auto-poll berkala, dan jumlah baris di DOM SAMA dengan jumlah sesi yang ada:
+    //    Cukup perbarui angka recordCount di tempat agar DOM tidak di-wipe & zoom level grafik tidak ter-reset!
+    //    Jika ada sesi baru (jumlah baris beda / 0), maka jalankan render ulang lengkap agar sesi baru langsung muncul!
+    if (isAutoPoll && existingRowCount === filtered.length && tbody.children.length > 0) {
         filtered.forEach(session => {
             const row = document.getElementById(`detail_${session.id}`)?.previousElementSibling;
-            const countBadge = row?.querySelector('.record-count-badge');
-            if (countBadge) {
-                countBadge.textContent = `${session.recordCount || 0} record`;
+            if (row) {
+                const countBadge = row.querySelector('.record-count-badge');
+                if (countBadge) {
+                    countBadge.textContent = `${session.recordCount || 0} record`;
+                }
             }
         });
         return;

@@ -1263,7 +1263,7 @@ def get_sessions(device_id: str):
                         'recordCount': active_count,
                         'startTimestamp': int(time.time() * 1000),
                         'deviceId': device_id,
-                        'deviceName': device_name,
+                        'deviceName': _capture_state.get('device_name') or current_device_name,
                         'phases': active_phases,
                         'phaseNames': active_names or {ph: ph for ph in active_phases},
                     })
