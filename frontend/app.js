@@ -2613,7 +2613,7 @@ async function saveDeviceName(deviceId) {
     }
 }
 async function deleteDevice(deviceId, deviceName) {
-    const confirmed = await showModal('Hapus Device', `Apakah Anda yakin ingin menghapus device:\n"${deviceName}"?\n\nSemua data histori dan data sensor terkait akan dihapus secara permanen dari server.`, 'warning', ['confirm']);
+    const confirmed = await showModal('Hapus Device Permanen?', `Apakah Anda yakin ingin menghapus device:\n"${deviceName}"?\n\nSeluruh data histori dan konfigurasi sensor terkait akan dihapus secara permanen dari server.`, 'warning', ['confirm']);
     if (!confirmed) return;
     
     showGlobalLoader();
@@ -2801,7 +2801,7 @@ async function savePhaseRename(deviceId, phase) {
     }
 }
 async function deleteSensor(deviceId, phase) {
-    const confirmed = await showModal('Hapus Sensor', `Apakah Anda yakin ingin menghapus sensor ${phase}?\n\nPengaturan nama dan warna untuk sensor ini akan dihapus dari device.`, 'warning', ['confirm']);
+    const confirmed = await showModal('Hapus Sensor Permanen?', `Apakah Anda yakin ingin menghapus sensor ${phase}?\n\nKonfigurasi nama dan warna untuk sensor ini akan dihapus dari device.`, 'warning', ['confirm']);
     if (!confirmed) return;
     
     showGlobalLoader();
@@ -4050,8 +4050,8 @@ async function exportSession(sessionId, sessionName, event) {
             return; 
         }
 
-        const confirmed = await showModal('Export Sesi',
-            `Ekspor ${totalRecords} record (${phaseKeys.length} sensor) dari sesi:\n"${sessionName}"\n\nData database TIDAK dihapus. Lanjutkan?`, 'info', ['confirm']);
+        const confirmed = await showModal('Ekspor Data Sesi ke Excel',
+            `Unduh ${totalRecords.toLocaleString('id-ID')} record (${phaseKeys.length} sensor) dari sesi:\n"${sessionName}"?\n\nProses ini hanya mengunduh berkas Excel dan tidak akan mengubah atau menghapus data di database.`, 'info', ['confirm']);
         if (!confirmed) return;
 
         const session = sessionsData[sessionId];
@@ -4151,8 +4151,8 @@ async function backupSessionJSON(sessionId, sessionName, event) {
             return; 
         }
 
-        const confirmed = await showModal('Backup Sesi JSON',
-            `Unduh cadangan ${totalRecords} record (${phaseKeys.length} sensor) dari sesi:\n"${sessionName}"?\n\nFile ini nantinya dapat dimuat kembali lewat Visualisasi Offline.`, 'info', ['confirm']);
+        const confirmed = await showModal('Unduh Backup JSON Sesi',
+            `Unduh berkas cadangan ${totalRecords.toLocaleString('id-ID')} record (${phaseKeys.length} sensor) dari sesi:\n"${sessionName}"?\n\nBerkas ini dapat Anda simpan dan dibuka kembali kapan saja lewat menu Visualisasi Data.`, 'info', ['confirm']);
         if (!confirmed) return;
 
         // Construct standard backup schema
@@ -4194,8 +4194,8 @@ async function backupSessionJSON(sessionId, sessionName, event) {
 
 
 async function clearRecords() {
-    if (!historyData.length && !Object.keys(sessionsData).length) { await showModal('Tidak Ada Data', 'Tidak ada history yang perlu dihapus.', 'info'); return; }
-    const confirmed = await showModal('Konfirmasi Hapus Record', `Hapus SEMUA sesi & record device "${selectedDeviceName}"?\n\nData TIDAK DAPAT dikembalikan.`, 'warning', ['confirm']);
+    if (!historyData.length && !Object.keys(sessionsData).length) { await showModal('Tidak Ada Data', 'Tidak ada data histori yang perlu dihapus.', 'info'); return; }
+    const confirmed = await showModal('Hapus Semua Rekaman Device?', `Apakah Anda yakin ingin menghapus SEMUA sesi & data rekaman device:\n"${selectedDeviceName}"?\n\nData yang telah dihapus TIDAK DAPAT dikembalikan.`, 'warning', ['confirm']);
     if (!confirmed) return;
     try {
         const res = await fetch('/api/capture/clear-all', {
@@ -4356,7 +4356,7 @@ async function syncCaptureStatus() {
 }
 
 async function quickStopCapture() {
-    const confirmed = await showModal('Hentikan Rekaman', 'Hentikan sesi rekaman yang sedang berlangsung?\n\nData sudah tersimpan di database.', 'warning', ['confirm']);
+    const confirmed = await showModal('Hentikan Rekaman Sesi?', 'Apakah Anda yakin ingin menghentikan sesi rekaman yang sedang berlangsung?\n\nData yang sudah terekam tetap tersimpan aman di database.', 'warning', ['confirm']);
     if (confirmed) await _apiStopCapture();
 }
 function _startStatusPolling() {
@@ -4387,7 +4387,7 @@ async function toggleCapture() {
         if (!isConnected) { await showModal('Device Offline', 'Tidak dapat memulai capture.\nPastikan device menyala.', 'error'); return; }
         openSessionNameModal();
     } else {
-        const confirmed = await showModal('Hentikan Rekaman', 'Hentikan sesi rekaman yang sedang berlangsung?\n\nData sudah tersimpan di database.', 'warning', ['confirm']);
+        const confirmed = await showModal('Hentikan Rekaman Sesi?', 'Apakah Anda yakin ingin menghentikan sesi rekaman yang sedang berlangsung?\n\nData yang sudah terekam tetap tersimpan aman di database.', 'warning', ['confirm']);
         if (confirmed) await _apiStopCapture();
     }
 }
@@ -4611,7 +4611,7 @@ async function deleteSession(sessionId, sessionName, event) {
     const session = sessionsData[sessionId];
     const isOffline = session && session.isOfflineBackup;
 
-    const confirmed = await showModal('Hapus Sesi', `Hapus sesi:\n"${sessionName}"\n\nSemua record akan ikut terhapus.`, 'warning', ['confirm']);
+    const confirmed = await showModal('Hapus Sesi Rekaman?', `Apakah Anda yakin ingin menghapus sesi:\n"${sessionName}"?\n\nSeluruh data pengukuran dalam sesi ini akan dihapus secara permanen.`, 'warning', ['confirm']);
     if (!confirmed) return;
 
     if (isOffline) {
@@ -4762,7 +4762,7 @@ async function handleOfflineFile(file) {
                 };
                 
                 hideGlobalLoader();
-                await showModal('Visualisasi Berhasil', `File backup JSON sesi "${session.name}" berhasil dimuat secara offline.`, 'success');
+                await showModal('Visualisasi Berhasil', `Berkas cadangan JSON sesi "${session.name}" berhasil dimuat ke tampilan pratinjau.`, 'success');
                 renderOfflineWorkspace();
             } catch (err) {
                 hideGlobalLoader();
@@ -4853,7 +4853,7 @@ async function handleOfflineFile(file) {
                 };
                 
                 hideGlobalLoader();
-                await showModal('Visualisasi Berhasil', `File Excel sesi "${sessionName}" berhasil dimuat secara offline.`, 'success');
+                await showModal('Visualisasi Berhasil', `Berkas Excel sesi "${sessionName}" berhasil dimuat ke tampilan pratinjau.`, 'success');
                 renderOfflineWorkspace();
                 
             } catch (err) {
