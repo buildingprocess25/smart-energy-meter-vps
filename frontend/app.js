@@ -473,34 +473,41 @@ function _panChartPixels(chart, dx, dy = 0) {
 }
 
 function _initChartGestures(chart) {
-    if (!chart || !chart.canvas || chart.canvas._gestureInit) return;
+    if (!chart || !chart.canvas) return;
     const canvas = chart.canvas;
+    canvas._activeChart = chart;
+
+    if (canvas._gestureInit) return;
     canvas._gestureInit = true;
 
     let isDragging = false;
     let dragStartX = 0;
     let dragStartY = 0;
 
+    const getActiveChart = () => canvas._activeChart || chart;
+
     canvas.addEventListener('mousemove', (e) => {
+        const targetChart = getActiveChart();
         const rect = canvas.getBoundingClientRect();
         _mouseChartPos.x = e.clientX - rect.left;
         _mouseChartPos.y = e.clientY - rect.top;
         _mouseChartPos.active = true;
-        _mouseChartPos.chart = chart;
+        _mouseChartPos.chart = targetChart;
 
-        if (isDragging && chart) {
+        if (isDragging && targetChart) {
             const dx = e.clientX - dragStartX;
             const dy = e.clientY - dragStartY;
             dragStartX = e.clientX;
             dragStartY = e.clientY;
-            _panChartPixels(chart, dx, dy);
-        } else if (chart) {
-            chart.render();
+            _panChartPixels(targetChart, dx, dy);
+        } else if (targetChart) {
+            targetChart.render();
         }
     });
 
     canvas.addEventListener('mouseleave', () => {
-        if (_mouseChartPos.chart === chart) {
+        const targetChart = getActiveChart();
+        if (_mouseChartPos.chart === targetChart || _mouseChartPos.chart?.canvas === canvas) {
             _mouseChartPos.active = false;
             _mouseChartPos.chart = null;
         }
@@ -508,7 +515,7 @@ function _initChartGestures(chart) {
             isDragging = false;
             canvas.style.cursor = 'crosshair';
         }
-        if (chart) chart.render();
+        if (targetChart) targetChart.render();
     });
 
     canvas.addEventListener('mousedown', (e) => {
@@ -529,24 +536,26 @@ function _initChartGestures(chart) {
 
     // Double-click pada grafik untuk reset zoom & auto-fit sumbu Y
     canvas.addEventListener('dblclick', (e) => {
+        const targetChart = getActiveChart();
         e.preventDefault();
-        if (chart === realtimeChart) {
+        if (targetChart === realtimeChart) {
             resetChartZoom();
-        } else if (chart) {
-            if (chart.scales?.x?.options) {
-                delete chart.scales.x.options.min;
-                delete chart.scales.x.options.max;
+        } else if (targetChart) {
+            if (targetChart.scales?.x?.options) {
+                delete targetChart.scales.x.options.min;
+                delete targetChart.scales.x.options.max;
             }
-            if (chart.scales?.y?.options) {
-                delete chart.scales.y.options.min;
-                delete chart.scales.y.options.max;
+            if (targetChart.scales?.y?.options) {
+                delete targetChart.scales.y.options.min;
+                delete targetChart.scales.y.options.max;
             }
-            chart.update('none');
+            targetChart.update('none');
         }
     });
 
     canvas.addEventListener('wheel', (e) => {
-        if (!chart) return;
+        const targetChart = getActiveChart();
+        if (!targetChart) return;
         // Jika tidak menahan tombol Ctrl/Meta, biarkan halaman web di-scroll ke atas/bawah secara alami
         const isZoom = e.ctrlKey || e.metaKey;
         if (!isZoom) return;
@@ -555,7 +564,7 @@ function _initChartGestures(chart) {
         const rect = canvas.getBoundingClientRect();
         const mouseX = e.clientX - rect.left;
         const zoomFactor = Math.pow(1.0015, e.deltaY);
-        _zoomChartFocal(chart, mouseX, zoomFactor);
+        _zoomChartFocal(targetChart, mouseX, zoomFactor);
     }, { passive: false });
 }
 const _ttDrag = { active: false, offX: 0, offY: 0, pinned: false };
