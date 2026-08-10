@@ -1859,11 +1859,11 @@ function initChart() {
                         display: !!(xTitles[timeFilter]),
                         text: xTitles[timeFilter] || '',
                         font: { size: 10, weight: '600', family: "'Outfit','Segoe UI',sans-serif" },
-                        color: '#9CA3AF',
+                        color: document.documentElement.classList.contains('dark') ? '#94a3b8' : '#9CA3AF',
                         padding: { top: 6 },
                     },
                     grid: {
-                        color: 'rgba(226,232,240,0.7)',
+                        color: document.documentElement.classList.contains('dark') ? 'rgba(255, 255, 255, 0.04)' : 'rgba(226, 232, 240, 0.7)',
                         drawTicks: false,
                         lineWidth: 1,
                         borderDash: [4, 4],
@@ -1872,7 +1872,7 @@ function initChart() {
                         maxRotation: 45,
                         minRotation: 45,
                         font: { size: 10.5, weight: '600', family: "'Outfit','Segoe UI',sans-serif" },
-                        color: '#64748B',
+                        color: document.documentElement.classList.contains('dark') ? '#94a3b8' : '#64748B',
                         maxTicksLimit: maxTicksMap[timeFilter] ?? 10,
                         padding: 8,
                         autoSkip: true,
@@ -1888,18 +1888,18 @@ function initChart() {
                         display: true,
                         text: unitLabel,
                         font: { size: 10, weight: '600', family: "'Outfit','Segoe UI',sans-serif" },
-                        color: '#9CA3AF',
+                        color: document.documentElement.classList.contains('dark') ? '#94a3b8' : '#9CA3AF',
                         padding: { bottom: 8 },
                     },
                     grid: {
-                        color: 'rgba(226,232,240,0.7)',
+                        color: document.documentElement.classList.contains('dark') ? 'rgba(255, 255, 255, 0.04)' : 'rgba(226, 232, 240, 0.7)',
                         drawTicks: false,
                         lineWidth: 1,
                         borderDash: [4, 4],
                     },
                     ticks: {
                         font: { size: 10.5, weight: '600', family: "'Outfit','Segoe UI',sans-serif" },
-                        color: '#64748B',
+                        color: document.documentElement.classList.contains('dark') ? '#94a3b8' : '#64748B',
                         padding: 12,
                         maxTicksLimit: 6,
                         callback: v => {
@@ -5160,19 +5160,21 @@ function _updateThemeUI(isDark) {
 function _updateChartTheme(chart, isDark) {
     if (!chart || !chart.options) return;
     const textColor = isDark ? '#94a3b8' : '#64748b';
-    const gridColor = isDark ? 'rgba(255,255,255,0.08)' : 'rgba(226,232,240,0.7)';
+    const gridColor = isDark ? 'rgba(255, 255, 255, 0.04)' : 'rgba(226, 232, 240, 0.7)';
     
     if (chart.options.scales?.x) {
         if (!chart.options.scales.x.ticks) chart.options.scales.x.ticks = {};
         if (!chart.options.scales.x.grid) chart.options.scales.x.grid = {};
         chart.options.scales.x.ticks.color = textColor;
         chart.options.scales.x.grid.color = gridColor;
+        if (chart.options.scales.x.title) chart.options.scales.x.title.color = textColor;
     }
     if (chart.options.scales?.y) {
         if (!chart.options.scales.y.ticks) chart.options.scales.y.ticks = {};
         if (!chart.options.scales.y.grid) chart.options.scales.y.grid = {};
         chart.options.scales.y.ticks.color = textColor;
         chart.options.scales.y.grid.color = gridColor;
+        if (chart.options.scales.y.title) chart.options.scales.y.title.color = textColor;
     }
     if (chart.options.plugins?.legend?.labels) {
         chart.options.plugins.legend.labels.color = isDark ? '#e2e8f0' : '#374151';
