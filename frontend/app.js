@@ -4272,15 +4272,24 @@ async function _refreshActiveSessionRecords() {
 
 async function syncCaptureStatus() {
     try {
-        const status = await fetch('/api/capture/status').then(r => r.json());
+        const devParam = selectedDeviceId ? `?deviceId=${encodeURIComponent(selectedDeviceId)}` : '';
+        const status = await fetch(`/api/capture/status${devParam}`).then(r => r.json());
+        
+        // Status khusus untuk device yang sedang dipilih di UI
+        const currentDevStatus = (status.devices && selectedDeviceId && status.devices[selectedDeviceId])
+            ? status.devices[selectedDeviceId]
+            : status;
+
+        const isDevActive = Boolean(currentDevStatus && currentDevStatus.active && currentDevStatus.device_id === selectedDeviceId);
+
         if (!_captureTransitioning) {
-            if (status.active) {
+            if (isDevActive) {
                 captureActive = true;
-                currentSessionId = status.session_id || null;
+                currentSessionId = currentDevStatus.session_id || null;
                 _updateCaptureButtonUI(true);
 
                 // Tampilkan sesi aktif SEGERA tanpa menunggu record pertama masuk DB
-                if (currentSessionId && selectedDeviceId && status.device_id === selectedDeviceId) {
+                if (currentSessionId && selectedDeviceId) {
                     if (!sessionsData[currentSessionId]) {
                         const dev = _deviceListCache.find(d => d.id === selectedDeviceId);
                         const devPhases = dev && dev.phases 
@@ -4289,23 +4298,23 @@ async function syncCaptureStatus() {
                         // Sesi baru: inject langsung ke sessionsData agar muncul di tabel
                         sessionsData[currentSessionId] = {
                             id: currentSessionId,
-                            name: status.session_name || 'Rekaman',
-                            startTime: status.started_at || '---',
+                            name: currentDevStatus.session_name || 'Rekaman',
+                            startTime: currentDevStatus.started_at || '---',
                             endTime: null,
                             recordCount: 0,
                             startTimestamp: Date.now(),
-                            deviceId: status.device_id,
-                            deviceName: selectedDeviceName || status.device_id,
+                            deviceId: selectedDeviceId,
+                            deviceName: selectedDeviceName || selectedDeviceId,
                             phases: devPhases,
                             phaseNames: {},
                         };
                     }
                     // Update record count dari status (akurat tanpa perlu query DB)
                     if (sessionsData[currentSessionId]) {
-                        sessionsData[currentSessionId].recordCount = status.count || sessionsData[currentSessionId].recordCount;
+                        sessionsData[currentSessionId].recordCount = currentDevStatus.count || sessionsData[currentSessionId].recordCount;
                     }
                 }
-            } else if (!status.finalizing) {
+            } else if (!currentDevStatus.finalizing) {
                 const wasActive = captureActive;
                 captureActive = false;
                 currentSessionId = null;
@@ -4316,7 +4325,7 @@ async function syncCaptureStatus() {
             }
         }
         if (!_captureTransitioning && !_intervalUserEdited) {
-            const serverSec = status.interval || 3;
+            const serverSec = currentDevStatus.interval || 15;
             captureInterval = serverSec * 1000;
             const inputEl = $('intervalInput'), unitEl = $('intervalUnit');
             if (inputEl && unitEl) {
@@ -4327,7 +4336,6 @@ async function syncCaptureStatus() {
                 DOM.intervalDisplay.textContent = `Current: ${serverSec} seconds`;
         }
         // Refresh dari DB setiap 8 detik (untuk phases & count akurat)
-        // Di antara refresh: update tampilan dari status.count saja (lebih cepat)
         const now = Date.now();
         if (captureActive && selectedDeviceId) {
             if (now - _lastHistoryRefresh > _HISTORY_REFRESH_MS) {
@@ -4339,14 +4347,23 @@ async function syncCaptureStatus() {
         }
         const recBadge = $('recordingBadge');
         const recInfo = $('recBadgeInfo');
+        const activeDevIds = status.active_device_ids || (status.active && status.device_id ? [status.device_id] : []);
+
         if (recBadge) {
-            if (status.active) {
+            if (activeDevIds.length > 0) {
                 recBadge.style.display = 'flex';
                 if (recInfo) {
-                    const ivStr = status.interval ? `${status.interval}s` : '15s';
-                    const cntStr = status.count != null ? `${status.count} recs` : '';
-                    const sName = status.session_name || 'Rekaman';
-                    recInfo.textContent = `${sName} (${ivStr} · ${cntStr})`;
+                    if (isDevActive) {
+                        const ivStr = currentDevStatus.interval ? `${currentDevStatus.interval}s` : '15s';
+                        const cntStr = currentDevStatus.count != null ? `${currentDevStatus.count} recs` : '';
+                        const sName = currentDevStatus.session_name || 'Rekaman';
+                        recInfo.textContent = `${sName} (${ivStr} · ${cntStr})`;
+                    } else {
+                        const activeDevName = (status.devices && status.devices[activeDevIds[0]])
+                            ? (status.devices[activeDevIds[0]].device_name || activeDevIds[0])
+                            : activeDevIds[0];
+                        recInfo.textContent = `Background: ${activeDevName} (${activeDevIds.length} aktif)`;
+                    }
                 }
             } else {
                 recBadge.style.display = 'none';
@@ -5093,12 +5110,81 @@ function _renderOfflinePaginationBar(page, totalPages, totalCount) {
     </div>`;
 }
 
+/* ==========================================================================
+   Theme Management (Light / Dark Mode) matching Sparta Energy Palette
+   ========================================================================== */
+function initTheme() {
+    const savedTheme = localStorage.getItem('sem_theme');
+    const isDark = savedTheme === 'dark' || (!savedTheme && window.matchMedia('(prefers-color-scheme: dark)').matches);
+    if (isDark) {
+        document.documentElement.classList.add('dark');
+    } else {
+        document.documentElement.classList.remove('dark');
+    }
+    _updateThemeUI(isDark);
+}
+
+function toggleTheme() {
+    const isDark = document.documentElement.classList.toggle('dark');
+    localStorage.setItem('sem_theme', isDark ? 'dark' : 'light');
+    _updateThemeUI(isDark);
+    
+    // Update Chart themes dynamically
+    if (typeof realtimeChart !== 'undefined' && realtimeChart) {
+        _updateChartTheme(realtimeChart, isDark);
+    }
+    if (typeof activeOfflineChart !== 'undefined' && activeOfflineChart) {
+        _updateChartTheme(activeOfflineChart, isDark);
+    }
+}
+
+function _updateThemeUI(isDark) {
+    const sunIcon = document.getElementById('themeIconSun');
+    const moonIcon = document.getElementById('themeIconMoon');
+    const themeText = document.getElementById('themeText');
+    if (sunIcon && moonIcon) {
+        if (isDark) {
+            sunIcon.style.display = 'block';
+            moonIcon.style.display = 'none';
+            if (themeText) themeText.textContent = 'Light';
+        } else {
+            sunIcon.style.display = 'none';
+            moonIcon.style.display = 'block';
+            if (themeText) themeText.textContent = 'Dark';
+        }
+    }
+}
+
+function _updateChartTheme(chart, isDark) {
+    if (!chart || !chart.options) return;
+    const textColor = isDark ? '#94a3b8' : '#64748b';
+    const gridColor = isDark ? 'rgba(255,255,255,0.08)' : 'rgba(226,232,240,0.7)';
+    
+    if (chart.options.scales?.x) {
+        if (!chart.options.scales.x.ticks) chart.options.scales.x.ticks = {};
+        if (!chart.options.scales.x.grid) chart.options.scales.x.grid = {};
+        chart.options.scales.x.ticks.color = textColor;
+        chart.options.scales.x.grid.color = gridColor;
+    }
+    if (chart.options.scales?.y) {
+        if (!chart.options.scales.y.ticks) chart.options.scales.y.ticks = {};
+        if (!chart.options.scales.y.grid) chart.options.scales.y.grid = {};
+        chart.options.scales.y.ticks.color = textColor;
+        chart.options.scales.y.grid.color = gridColor;
+    }
+    if (chart.options.plugins?.legend?.labels) {
+        chart.options.plugins.legend.labels.color = isDark ? '#e2e8f0' : '#374151';
+    }
+    chart.update('none');
+}
+
 function goOfflineTablePage(page) {
     activeOfflineSelectedPage = page;
     renderOfflineTable();
 }
 
 document.addEventListener('DOMContentLoaded', async () => {
+    initTheme();
     initOfflineDropZone();
     updateDateNavigatorUI();
     initChart();

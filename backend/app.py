@@ -341,13 +341,21 @@ def validate_device_name(name: str) -> tuple[bool, str]:
     if any(c in name for c in '/.$#[]'): return False, 'Karakter tidak diizinkan: / . $ # [ ]'
     return True, ''
 def validate_phase_key(phase: str) -> bool: return bool(_PHASE_RE.match(phase))
-_capture_lock  = threading.Lock()
-_capture_state = {
-    'active': False, 'device_id': None, 'device_name': None,
-    'session_id': None, 'session_name': None, 'interval': 15,
-    'count': 0, 'started_at': None, 'enabled_phases': None,
-    '_thread': None, '_stop_event': None, '_wake_event': None, '_finalizing': False, 'time_offset_ms': 0,
-}
+_capture_lock = threading.Lock()
+_capture_states: dict[str, dict] = {}  # { device_id: capture_state_dict }
+
+def _get_device_capture_state(device_id: str) -> dict:
+    if not device_id:
+        device_id = 'default'
+    if device_id not in _capture_states:
+        _capture_states[device_id] = {
+            'active': False, 'device_id': device_id, 'device_name': device_id,
+            'session_id': None, 'session_name': None, 'interval': 15,
+            'count': 0, 'started_at': None, 'enabled_phases': None,
+            '_thread': None, '_stop_event': None, '_wake_event': None, '_finalizing': False, 'time_offset_ms': 0,
+            'sensor_names': {},
+        }
+    return _capture_states[device_id]
 def _data_hash(raw): return hashlib.md5(json.dumps(raw, sort_keys=True).encode()).hexdigest() if raw else None
 _hourly_stop = threading.Event()
 _last_write_per_device: dict[str, str] = {}  # guard duplikat per device
@@ -627,9 +635,10 @@ def _do_capture_io(device_id, session_id, sched_ts, interval, last_hash, last_ch
         epoch_val = int(sched_shifted * 1000)
         
         with _capture_lock:
-            sname = _capture_state.get('session_name') or 'Rekaman'
-            sensor_names = _capture_state.get('sensor_names') or {}
-            dev_name = _capture_state.get('device_name') or device_id
+            cstate = _get_device_capture_state(device_id)
+            sname = cstate.get('session_name') or 'Rekaman'
+            sensor_names = cstate.get('sensor_names') or {}
+            dev_name = cstate.get('device_name') or device_id
             
         phases = enabled_phases if enabled_phases else sorted([k for k in (raw or {}) if _PHASE_RE.match(k)], key=lambda x: int(x[1:]))
         if not phases: return
@@ -655,18 +664,19 @@ def _do_capture_io(device_id, session_id, sched_ts, interval, last_hash, last_ch
                 ))
                 
         with _capture_lock:
-            _capture_state['count'] += len(phases)
+            cstate = _get_device_capture_state(device_id)
+            cstate['count'] += len(phases)
     except Exception as e:
-        print(f"Error in _do_capture_io: {e}")
+        print(f"Error in _do_capture_io ({device_id}): {e}")
         try:
             with open("capture_error.log", "a") as f:
-                f.write(f"Error in _do_capture_io: {e}\n")
+                f.write(f"Error in _do_capture_io ({device_id}): {e}\n")
         except:
             pass
 
-def _capture_worker(stop: threading.Event, wake: threading.Event) -> None:
+def _capture_worker(device_id: str, stop: threading.Event, wake: threading.Event) -> None:
     last_hash: list = [None]; last_change: list = [None]
-    nxt = time.time() + 3  # 3s: cukup untuk reset energi ESP32, jauh lebih cepat dari 10s
+    nxt = time.time() + 3
     while not stop.is_set():
         if stop.wait(timeout=min(max(0., nxt - time.time()), 0.2)): break
         if wake.is_set():
@@ -675,42 +685,49 @@ def _capture_worker(stop: threading.Event, wake: threading.Event) -> None:
             continue
         if time.time() < nxt: continue
         with _capture_lock:
-            if not _capture_state['active']: break
-            sid = _capture_state['session_id']; did = _capture_state['device_id']
-            iv  = float(_capture_state['interval']); ep = _capture_state.get('enabled_phases')
-            to_ms = _capture_state.get('time_offset_ms', 0)
+            cstate = _get_device_capture_state(device_id)
+            if not cstate.get('active'): break
+            sid = cstate['session_id']; did = cstate['device_id']
+            iv  = float(cstate['interval']); ep = cstate.get('enabled_phases')
+            to_ms = cstate.get('time_offset_ms', 0)
         sched = nxt; nxt += iv
         threading.Thread(target=_do_capture_io, args=(did, sid, sched, iv, last_hash, last_change, ep, to_ms), daemon=True).start()
 
-def _start_thread() -> None:
+def _start_thread(device_id: str) -> None:
     se, we = threading.Event(), threading.Event()
-    t = threading.Thread(target=_capture_worker, args=(se, we), daemon=True)
+    t = threading.Thread(target=_capture_worker, args=(device_id, se, we), daemon=True)
     t.start()
-    _capture_state.update({'_thread': t, '_stop_event': se, '_wake_event': we})
+    cstate = _get_device_capture_state(device_id)
+    cstate.update({'_thread': t, '_stop_event': se, '_wake_event': we})
 
 def _finalize_bg(sid, did, count, se, th, enabled_phases, time_offset_ms) -> None:
     try:
         if se: se.set()
         if th and th.is_alive(): th.join(timeout=5)
     except Exception as e:
-        print(f"Error in _finalize_bg: {e}")
+        print(f"Error in _finalize_bg ({did}): {e}")
     finally:
-        with _capture_lock: _capture_state['_finalizing'] = False
+        with _capture_lock:
+            if did in _capture_states:
+                _capture_states[did]['_finalizing'] = False
 
-def _stop_and_respond() -> None:
+def _stop_device_capture(device_id: str) -> bool:
     with _capture_lock:
-        if not _capture_state['active']: return
-        _capture_state.update({'active': False, '_finalizing': True})
-        sid = _capture_state['session_id']; did = _capture_state['device_id']
-        cnt = _capture_state['count'];      se  = _capture_state.get('_stop_event')
-        th  = _capture_state.get('_thread'); ep = _capture_state.get('enabled_phases')
-        to_ms = _capture_state.get('time_offset_ms', 0)
-        _capture_state.update({
-            'device_id': None, 'device_name': None, 'session_id': None, 'session_name': None,
+        cstate = _capture_states.get(device_id)
+        if not cstate or not cstate.get('active'):
+            return False
+        cstate.update({'active': False, '_finalizing': True})
+        sid = cstate['session_id']; did = cstate['device_id']
+        cnt = cstate['count'];      se  = cstate.get('_stop_event')
+        th  = cstate.get('_thread'); ep = cstate.get('enabled_phases')
+        to_ms = cstate.get('time_offset_ms', 0)
+        cstate.update({
+            'session_id': None, 'session_name': None,
             'count': 0, 'started_at': None, 'enabled_phases': None,
             '_thread': None, '_stop_event': None, '_wake_event': None,
         })
     threading.Thread(target=_finalize_bg, args=(sid, did, cnt, se, th, ep, to_ms), daemon=True).start()
+    return True
 
 _APP_VERSION = int(time.time())
 
@@ -853,9 +870,10 @@ def rename_device(device_id: str):
             """, (device_id, name, name))
             
             with _capture_lock:
-                if _capture_state.get('active') and _capture_state.get('device_id') == device_id:
-                    _capture_state['device_name'] = name
-                    active_sid = _capture_state.get('session_id')
+                cstate = _capture_states.get(device_id)
+                if cstate and cstate.get('active'):
+                    cstate['device_name'] = name
+                    active_sid = cstate.get('session_id')
                     if active_sid:
                         cur.execute("UPDATE history SET device_name = %s WHERE session_id = %s", (name, active_sid))
 
@@ -1068,13 +1086,46 @@ def trigger_hourly_all():
 
 @app.route('/api/capture/status')
 def capture_status():
+    req_did = (request.args.get('deviceId') or '').strip()
     with _capture_lock:
-        s = _capture_state
-        return jsonify({
-            'active': s['active'], 'device_id': s['device_id'], 'device_name': s['device_name'],
-            'session_id': s['session_id'], 'session_name': s['session_name'], 'interval': s['interval'],
-            'count': s['count'], 'started_at': s['started_at'], 'finalizing': s.get('_finalizing', False),
-        })
+        active_devices = []
+        devices_summary = {}
+        target_state = None
+
+        for did, s in _capture_states.items():
+            if s.get('active') or s.get('_finalizing'):
+                active_devices.append(did)
+            info = {
+                'active': s.get('active', False), 'device_id': did, 'device_name': s.get('device_name', did),
+                'session_id': s.get('session_id'), 'session_name': s.get('session_name'), 'interval': s.get('interval', 15),
+                'count': s.get('count', 0), 'started_at': s.get('started_at'), 'finalizing': s.get('_finalizing', False),
+            }
+            devices_summary[did] = info
+            if req_did and did == req_did:
+                target_state = info
+
+        if req_did and not target_state:
+            target_state = {
+                'active': False, 'device_id': req_did, 'device_name': req_did,
+                'session_id': None, 'session_name': None, 'interval': 15,
+                'count': 0, 'started_at': None, 'finalizing': False,
+            }
+
+        if not target_state:
+            first_active_did = active_devices[0] if active_devices else None
+            if first_active_did:
+                target_state = devices_summary[first_active_did]
+            else:
+                target_state = {
+                    'active': False, 'device_id': None, 'device_name': None,
+                    'session_id': None, 'session_name': None, 'interval': 15,
+                    'count': 0, 'started_at': None, 'finalizing': False,
+                }
+
+        res = dict(target_state)
+        res['active_device_ids'] = active_devices
+        res['devices'] = devices_summary
+        return jsonify(res)
 
 @app.route('/api/capture/start', methods=['POST'])
 def capture_start():
@@ -1087,11 +1138,11 @@ def capture_start():
     if not did: return jsonify({'ok': False, 'error': 'deviceId harus diisi'}), 400
     if not hints: return jsonify({'ok': False, 'error': 'Minimal 1 sensor harus diaktifkan'}), 400
     with _capture_lock:
-        if _capture_state['active'] or _capture_state.get('_finalizing'):
-            return jsonify({'ok': False, 'error': 'Capture sudah berjalan atau sedang finalisasi'}), 409
+        cstate = _get_device_capture_state(did)
+        if cstate.get('active') or cstate.get('_finalizing'):
+            return jsonify({'ok': False, 'error': f'Capture untuk perangkat {did} sudah berjalan'}), 409
         sid    = f'session_{int(time.time() * 1000)}'
         now_s  = _ts_now()
-        # Ambil nama sensor terdaftar di DB saat capture dimulai
         sensor_names = {}
         try:
             with get_db_cursor() as cur:
@@ -1107,7 +1158,7 @@ def capture_start():
         except Exception:
             pass
 
-        _capture_state.update({
+        cstate.update({
             'active': True, 'device_id': did, 'device_name': dname or did,
             'session_id': sid, 'session_name': sname, 'interval': iv,
             'count': 0, 'started_at': now_s, 'enabled_phases': hints, 'time_offset_ms': 0,
@@ -1118,23 +1169,40 @@ def capture_start():
                 _mqtt_client.publish(f"energymeter/{did}/cmd/resetEnergy", "1")
             except Exception:
                 pass
-        _start_thread()
+        _start_thread(did)
     return jsonify({'ok': True, 'session_id': sid, 'session_name': sname, 'device_id': did})
 
 @app.route('/api/capture/stop', methods=['POST'])
 def capture_stop():
-    with _capture_lock:
-        if not _capture_state['active']: return jsonify({'ok': False, 'error': 'Tidak ada capture aktif'}), 400
-    _stop_and_respond()
-    return jsonify({'ok': True})
+    body = request.get_json(silent=True) or {}
+    did  = (body.get('deviceId') or '').strip()
+    if not did:
+        with _capture_lock:
+            active_dids = [d for d, s in _capture_states.items() if s.get('active')]
+            did = active_dids[0] if active_dids else None
+    if not did:
+        return jsonify({'ok': False, 'error': 'Tidak ada capture aktif'}), 400
+    
+    stopped = _stop_device_capture(did)
+    if not stopped:
+        return jsonify({'ok': False, 'error': f'Tidak ada capture aktif untuk perangkat {did}'}), 400
+    return jsonify({'ok': True, 'device_id': did})
 
 @app.route('/api/capture/interval', methods=['POST'])
 def capture_interval():
-    iv = max(15, int((request.get_json(silent=True) or {}).get('interval', 15)))
+    body = request.get_json(silent=True) or {}
+    iv = max(15, int(body.get('interval', 15)))
+    did = (body.get('deviceId') or '').strip()
     with _capture_lock:
-        _capture_state['interval'] = iv
-        ev = _capture_state.get('_wake_event')
-        if ev: ev.set()
+        if did and did in _capture_states:
+            _capture_states[did]['interval'] = iv
+            ev = _capture_states[did].get('_wake_event')
+            if ev: ev.set()
+        else:
+            for s in _capture_states.values():
+                s['interval'] = iv
+                ev = s.get('_wake_event')
+                if ev: ev.set()
     return jsonify({'ok': True, 'interval': iv})
 
 @app.route('/api/capture/shift_time', methods=['POST'])
@@ -1145,8 +1213,9 @@ def capture_shift_time():
     if not sid: return jsonify({'ok': False, 'error': 'sessionId harus diisi'}), 400
     
     with _capture_lock:
-        if _capture_state['active'] and _capture_state['session_id'] == sid:
-            _capture_state['time_offset_ms'] = _capture_state.get('time_offset_ms', 0) + delta_ms
+        for s in _capture_states.values():
+            if s.get('active') and s.get('session_id') == sid:
+                s['time_offset_ms'] = s.get('time_offset_ms', 0) + delta_ms
             
     try:
         with get_db_cursor() as cur:
@@ -1243,13 +1312,14 @@ def get_sessions(device_id: str):
         # Gabungkan active session dari memory jika sedang berjalan untuk device ini
         # Ini mencegah tabel & badge memantul/hilang antara 0 sesi dan 1 sesi sebelum/saat data ditulis
         with _capture_lock:
-            if _capture_state.get('active') and _capture_state.get('device_id') == device_id:
-                active_sid = _capture_state.get('session_id')
-                active_sname = _capture_state.get('session_name')
-                active_start = _capture_state.get('started_at')
-                active_count = _capture_state.get('count', 0)
-                active_phases = _capture_state.get('enabled_phases', [])
-                active_names = _capture_state.get('sensor_names', {})
+            cstate = _capture_states.get(device_id, {})
+            if cstate.get('active'):
+                active_sid = cstate.get('session_id')
+                active_sname = cstate.get('session_name')
+                active_start = cstate.get('started_at')
+                active_count = cstate.get('count', 0)
+                active_phases = cstate.get('enabled_phases', [])
+                active_names = cstate.get('sensor_names', {})
 
                 existing = next((s for s in sessions if s['id'] == active_sid), None)
                 if existing:
@@ -1263,7 +1333,7 @@ def get_sessions(device_id: str):
                         'recordCount': active_count,
                         'startTimestamp': int(time.time() * 1000),
                         'deviceId': device_id,
-                        'deviceName': _capture_state.get('device_name') or current_device_name,
+                        'deviceName': cstate.get('device_name') or current_device_name,
                         'phases': active_phases,
                         'phaseNames': active_names or {ph: ph for ph in active_phases},
                     })
