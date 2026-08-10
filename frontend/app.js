@@ -5144,13 +5144,15 @@ function _updateThemeUI(isDark) {
     const themeText = document.getElementById('themeText');
     if (sunIcon && moonIcon) {
         if (isDark) {
-            sunIcon.style.display = 'block';
-            moonIcon.style.display = 'none';
-            if (themeText) themeText.textContent = 'Light';
-        } else {
+            // Tampilkan icon Bulan & label "Dark" saat Mode Gelap aktif
             sunIcon.style.display = 'none';
             moonIcon.style.display = 'block';
             if (themeText) themeText.textContent = 'Dark';
+        } else {
+            // Tampilkan icon Matahari & label "Light" saat Mode Terang aktif
+            sunIcon.style.display = 'block';
+            moonIcon.style.display = 'none';
+            if (themeText) themeText.textContent = 'Light';
         }
     }
 }
