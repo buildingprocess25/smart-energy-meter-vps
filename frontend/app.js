@@ -3215,8 +3215,22 @@ async function _attachHistoryListener(deviceId, isAutoPoll = false) {
 
         let totalCount = 0;
         historyData = [];
+        
+        const oldSessions = { ...sessionsData };
         sessionsData = {};
+        
+        // Preserve offline backups
+        Object.values(oldSessions).forEach(s => {
+            if (s.isOfflineBackup) {
+                sessionsData[s.id] = s;
+                totalCount += s.recordCount || 0;
+            }
+        });
+
         list.forEach(meta => {
+            if (oldSessions[meta.id] && oldSessions[meta.id].computedPhases) {
+                meta.computedPhases = oldSessions[meta.id].computedPhases;
+            }
             sessionsData[meta.id] = meta;
             totalCount += meta.recordCount || 0;
         });
