@@ -356,6 +356,50 @@ def _get_device_capture_state(device_id: str) -> dict:
             'sensor_names': {},
         }
     return _capture_states[device_id]
+
+STATE_FILE = 'active_captures.json'
+
+def _save_capture_states():
+    try:
+        with _capture_lock:
+            safe_states = {}
+            for did, state in _capture_states.items():
+                if state.get('active'):
+                    safe_states[did] = {
+                        'active': True,
+                        'session_id': state.get('session_id'),
+                        'session_name': state.get('session_name'),
+                        'device_id': state.get('device_id'),
+                        'device_name': state.get('device_name'),
+                        'interval': state.get('interval'),
+                        'started_at': state.get('started_at'),
+                        'count': state.get('count', 0),
+                        'enabled_phases': state.get('enabled_phases'),
+                        'sensor_names': state.get('sensor_names', {}),
+                        'time_offset_ms': state.get('time_offset_ms', 0)
+                    }
+        with open(STATE_FILE, 'w') as f:
+            json.dump(safe_states, f)
+    except Exception as e:
+        print(f"Error saving capture states: {e}")
+
+def _load_capture_states():
+    try:
+        if os.path.exists(STATE_FILE):
+            with open(STATE_FILE, 'r') as f:
+                saved = json.load(f)
+            to_start = []
+            with _capture_lock:
+                for did, state in saved.items():
+                    if state.get('active'):
+                        cstate = _get_device_capture_state(did)
+                        cstate.update(state)
+                        to_start.append(did)
+            for did in to_start:
+                _start_thread(did)
+    except Exception as e:
+        print(f"Error loading capture states: {e}")
+
 def _data_hash(raw): return hashlib.md5(json.dumps(raw, sort_keys=True).encode()).hexdigest() if raw else None
 _hourly_stop = threading.Event()
 _last_write_per_device: dict[str, str] = {}  # guard duplikat per device
@@ -726,6 +770,7 @@ def _stop_device_capture(device_id: str) -> bool:
             'count': 0, 'started_at': None, 'enabled_phases': None,
             '_thread': None, '_stop_event': None, '_wake_event': None,
         })
+    _save_capture_states()
     threading.Thread(target=_finalize_bg, args=(sid, did, cnt, se, th, ep, to_ms), daemon=True).start()
     return True
 
@@ -1170,6 +1215,7 @@ def capture_start():
             except Exception:
                 pass
         _start_thread(did)
+        _save_capture_states()
     return jsonify({'ok': True, 'session_id': sid, 'session_name': sname, 'device_id': did})
 
 @app.route('/api/capture/stop', methods=['POST'])
@@ -1714,4 +1760,7 @@ if __name__ == '__main__':
         flask_port = int(os.environ.get("FLASK_PORT", "5000"))
     except ValueError:
         flask_port = 5000
+    
+    _load_capture_states()
+    
     app.run(debug=True, host=flask_host, port=flask_port)
