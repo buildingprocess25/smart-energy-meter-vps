@@ -140,7 +140,23 @@ def _detect_phases(device_data: dict) -> list[str]:
     return sorted(keys, key=lambda x: int(x[1:]))
 
 db_pool = None
+sparta_db_pool = None
 _db_init_lock = threading.Lock()
+_sparta_db_init_lock = threading.Lock()
+
+def init_sparta_db():
+    global sparta_db_pool
+    with _sparta_db_init_lock:
+        if sparta_db_pool:
+            return
+        sparta_url = os.environ.get('SPARTA_DATABASE_URL')
+        if not sparta_url or not (sparta_url.startswith("postgres://") or sparta_url.startswith("postgresql://")):
+            return
+        try:
+            sparta_db_pool = psycopg2.pool.ThreadedConnectionPool(1, 10, sparta_url)
+            print("Sparta PostgreSQL connection pool initialized successfully.")
+        except Exception as e:
+            print(f"Failed to initialize Sparta PostgreSQL pool: {e}")
 
 def init_db():
     global db_pool
@@ -154,6 +170,9 @@ def init_db():
         try:
             pool = psycopg2.pool.ThreadedConnectionPool(1, 20, db_url)
             print("PostgreSQL connection pool initialized successfully.")
+
+            # Inisialisasi DB Sparta juga jika tersedia
+            init_sparta_db()
 
             # Create tables if not exist
             conn = pool.getconn()
@@ -211,6 +230,28 @@ def init_db():
                     cur.execute("SELECT column_name FROM information_schema.columns WHERE table_name='history' AND column_name='device_name';")
                     if not cur.fetchone():
                         cur.execute("ALTER TABLE history ADD COLUMN device_name VARCHAR(100) DEFAULT NULL;")
+                    cur.execute("SELECT column_name FROM information_schema.columns WHERE table_name='devices' AND column_name='store_id';")
+                    if not cur.fetchone():
+                        cur.execute("ALTER TABLE devices ADD COLUMN store_id VARCHAR(50) DEFAULT NULL;")
+                    cur.execute("SELECT column_name FROM information_schema.columns WHERE table_name='history' AND column_name='store_id';")
+                    if not cur.fetchone():
+                        cur.execute("ALTER TABLE history ADD COLUMN store_id VARCHAR(50) DEFAULT NULL;")
+                    cur.execute("SELECT column_name FROM information_schema.columns WHERE table_name='devices' AND column_name='latitude';")
+                    if not cur.fetchone():
+                        cur.execute("ALTER TABLE devices ADD COLUMN latitude FLOAT DEFAULT NULL;")
+                    cur.execute("SELECT column_name FROM information_schema.columns WHERE table_name='devices' AND column_name='longitude';")
+                    if not cur.fetchone():
+                        cur.execute("ALTER TABLE devices ADD COLUMN longitude FLOAT DEFAULT NULL;")
+                    cur.execute("SELECT column_name FROM information_schema.columns WHERE table_name='history' AND column_name='latitude';")
+                    if not cur.fetchone():
+                        cur.execute("ALTER TABLE history ADD COLUMN latitude FLOAT DEFAULT NULL;")
+                    cur.execute("SELECT column_name FROM information_schema.columns WHERE table_name='history' AND column_name='longitude';")
+                    if not cur.fetchone():
+                        cur.execute("ALTER TABLE history ADD COLUMN longitude FLOAT DEFAULT NULL;")
+                    # Pastikan kolom name & device_name bertipe TEXT tanpa batasan panjang karakter
+                    cur.execute("ALTER TABLE devices ALTER COLUMN name TYPE TEXT;")
+                    cur.execute("ALTER TABLE history ALTER COLUMN device_name TYPE TEXT;")
+                    cur.execute("ALTER TABLE history ALTER COLUMN session_name TYPE TEXT;")
                     def create_index_safe(idx_name, create_sql):
                         cur.execute("SELECT 1 FROM pg_indexes WHERE indexname = %s", (idx_name,))
                         if not cur.fetchone():
@@ -258,6 +299,42 @@ def init_db():
             db_pool = pool  # Simpan ke global hanya setelah semuanya sukses
         except Exception as e:
             print(f"Failed to initialize PostgreSQL pool: {e}")
+
+@contextlib.contextmanager
+def get_sparta_db_cursor():
+    global sparta_db_pool
+    if not sparta_db_pool:
+        init_sparta_db()
+        if not sparta_db_pool:
+            raise Exception("Sparta database connection pool not available.")
+    conn = None
+    for _ in range(3):
+        try:
+            conn = sparta_db_pool.getconn()
+            if conn.closed:
+                raise psycopg2.InterfaceError("connection closed")
+            with conn.cursor() as ping_cur:
+                ping_cur.execute("SELECT 1")
+            conn.rollback()
+            break
+        except Exception:
+            if conn:
+                try: sparta_db_pool.putconn(conn, close=True)
+                except Exception: pass
+            conn = None
+    if not conn:
+        raise Exception("Gagal mendapatkan koneksi aktif ke database Sparta")
+    try:
+        with conn.cursor() as cur:
+            yield cur
+        conn.commit()
+    except Exception as e:
+        try: conn.rollback()
+        except Exception: pass
+        raise e
+    finally:
+        try: sparta_db_pool.putconn(conn)
+        except Exception: pass
 
 def _get_healthy_conn():
     """Ambil koneksi dari pool yang masih aktif. Buang dan coba lagi jika stale."""
@@ -335,10 +412,8 @@ def _ts_now() -> str: return datetime.now(_WIB).strftime('%H:%M:%S %d/%m/%Y')
 def validate_device_name(name: str) -> tuple[bool, str]:
     if not name or not isinstance(name, str): return False, 'Nama harus berupa text'
     name = name.strip()
-    if not name:        return False, 'Nama tidak boleh kosong'
-    if len(name) < 2:   return False, 'Nama minimal 2 karakter' 
-    if len(name) > 100: return False, 'Nama maksimal 100 karakter'
-    if any(c in name for c in '/.$#[]'): return False, 'Karakter tidak diizinkan: / . $ # [ ]'
+    if not name: return False, 'Nama toko tidak boleh kosong'
+    if '\x00' in name: return False, 'Karakter tidak diizinkan'
     return True, ''
 def validate_phase_key(phase: str) -> bool: return bool(_PHASE_RE.match(phase))
 _capture_lock = threading.Lock()
@@ -683,6 +758,7 @@ def _do_capture_io(device_id, session_id, sched_ts, interval, last_hash, last_ch
             sname = cstate.get('session_name') or 'Rekaman'
             sensor_names = cstate.get('sensor_names') or {}
             dev_name = cstate.get('device_name') or device_id
+            store_id = cstate.get('store_id')
             
         phases = enabled_phases if enabled_phases else sorted([k for k in (raw or {}) if _PHASE_RE.match(k)], key=lambda x: int(x[1:]))
         if not phases: return
@@ -698,13 +774,13 @@ def _do_capture_io(device_id, session_id, sched_ts, interval, last_hash, last_ch
                     INSERT INTO history (
                         device_id, phase, timestamp, epoch,
                         voltage, current, power, frequency, energy, power_factor,
-                        offline, session_id, session_name, phase_name, device_name
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        offline, session_id, session_name, phase_name, device_name, store_id
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """, (
                     device_id, ph, ts, epoch_val,
                     f('Voltage (V)'), f('Current (A)'), f('Power (W)'),
                     f('Frequency (Hz)'), f('Active Energy (kWh)'), f('Power Factor'),
-                    phase_offline, session_id, sname, sensor_names.get(ph, ph), dev_name
+                    phase_offline, session_id, sname, sensor_names.get(ph, ph), dev_name, store_id
                 ))
                 
         with _capture_lock:
@@ -738,11 +814,13 @@ def _capture_worker(device_id: str, stop: threading.Event, wake: threading.Event
         threading.Thread(target=_do_capture_io, args=(did, sid, sched, iv, last_hash, last_change, ep, to_ms), daemon=True).start()
 
 def _start_thread(device_id: str) -> None:
-    se, we = threading.Event(), threading.Event()
-    t = threading.Thread(target=_capture_worker, args=(device_id, se, we), daemon=True)
-    t.start()
-    cstate = _get_device_capture_state(device_id)
-    cstate.update({'_thread': t, '_stop_event': se, '_wake_event': we})
+    with _capture_lock:
+        cstate = _get_device_capture_state(device_id)
+        if cstate.get('_thread') and cstate['_thread'].is_alive(): return
+        stop = threading.Event(); wake = threading.Event()
+        t = threading.Thread(target=_capture_worker, args=(device_id, stop, wake), daemon=True, name=f'Capture-{device_id}')
+        cstate.update({'_thread': t, '_stop_event': stop, '_wake_event': wake, '_finalizing': False})
+        t.start()
 
 def _finalize_bg(sid, did, count, se, th, enabled_phases, time_offset_ms) -> None:
     try:
@@ -760,12 +838,15 @@ def _stop_device_capture(device_id: str) -> bool:
         cstate = _capture_states.get(device_id)
         if not cstate or not cstate.get('active'):
             return False
-        cstate.update({'active': False, '_finalizing': True})
-        sid = cstate['session_id']; did = cstate['device_id']
-        cnt = cstate['count'];      se  = cstate.get('_stop_event')
-        th  = cstate.get('_thread'); ep = cstate.get('enabled_phases')
+        sid = cstate.get('session_id')
+        cnt = cstate.get('count', 0)
+        did = cstate.get('device_id', device_id)
+        se  = cstate.get('_stop_event')
+        th  = cstate.get('_thread')
+        ep  = cstate.get('enabled_phases')
         to_ms = cstate.get('time_offset_ms', 0)
         cstate.update({
+            'active': False, '_finalizing': True,
             'session_id': None, 'session_name': None,
             'count': 0, 'started_at': None, 'enabled_phases': None,
             '_thread': None, '_stop_event': None, '_wake_event': None,
@@ -776,6 +857,16 @@ def _stop_device_capture(device_id: str) -> bool:
 
 _APP_VERSION = int(time.time())
 
+DEMO_TESTING_STORE = {
+    'id': 'demo-head-office-001',
+    'code': 'DEMO-HO',
+    'name': 'Alfamart Head Office (Testing IoT)',
+    'branch': 'HEAD OFFICE',
+    'latitude': -6.2238,
+    'longitude': 106.6508,
+    'is_demo': True
+}
+
 @app.route('/')
 def index():
     return render_template('index.html', v=_APP_VERSION)
@@ -785,6 +876,53 @@ def health(): return jsonify({"status": "ok", "message": "Service is alive"}), 2
 
 @app.route('/api/config')
 def get_config(): return jsonify({})
+
+@app.route('/api/stores', methods=['GET'])
+def get_stores():
+    q = (request.args.get('q') or '').strip()
+    stores = []
+    
+    # Toko demo testing disisipkan jika query kosong atau mengandung kata kunci demo/head office/test
+    include_demo = not q or any(kw in q.lower() for kw in ['demo', 'head', 'office', 'test', 'ho', 'alfa'])
+    if include_demo:
+        stores.append(DEMO_TESTING_STORE)
+        
+    try:
+        with get_sparta_db_cursor() as cur:
+            if q:
+                cur.execute("""
+                    SELECT id, code, name, branch, latitude, longitude
+                    FROM stores
+                    WHERE (code ILIKE %s OR name ILIKE %s OR branch ILIKE %s)
+                    ORDER BY code ASC
+                    LIMIT 25;
+                """, (f"%{q}%", f"%{q}%", f"%{q}%"))
+            else:
+                cur.execute("""
+                    SELECT id, code, name, branch, latitude, longitude
+                    FROM stores
+                    ORDER BY code ASC
+                    LIMIT 25;
+                """)
+            rows = cur.fetchall()
+            for r in rows:
+                sid, scode, sname, sbranch, slat, slng = r
+                if scode != 'DEMO-HO':
+                    stores.append({
+                        'id': str(sid),
+                        'code': scode or '',
+                        'name': sname or '',
+                        'branch': sbranch or '',
+                        'latitude': float(slat) if slat is not None else None,
+                        'longitude': float(slng) if slng is not None else None,
+                        'is_demo': False
+                    })
+    except Exception as e:
+        print(f"Error fetching stores from Sparta DB: {e}")
+        if not stores:
+            stores.append(DEMO_TESTING_STORE)
+            
+    return jsonify({'ok': True, 'stores': stores, 'count': len(stores)})
 
 @app.route('/api/devices')
 def list_devices():
@@ -805,16 +943,17 @@ def list_devices():
                 'online': is_online,
                 'lastSeen': (raw or {}).get('Timestamp') or '---',
                 'phases': phases,
-                'phaseCount': len(phases)
+                'phaseCount': len(phases),
+                'storeId': None
             })
         return jsonify(devices)
 
     try:
         with get_db_cursor() as cur:
-            cur.execute("SELECT id, name, online, last_seen, sensors FROM devices")
+            cur.execute("SELECT id, name, online, last_seen, sensors, store_id, latitude, longitude FROM devices")
             rows = cur.fetchall()
         for row in rows:
-            did, name, online, last_seen, sensors_json = row
+            did, name, online, last_seen, sensors_json, store_id, lat, lng = row
             phases = []
             sensors_list = []
             if sensors_json:
@@ -857,7 +996,10 @@ def list_devices():
                 'online': online,
                 'lastSeen': last_seen,
                 'phases': phases,
-                'phaseCount': len(phases)
+                'phaseCount': len(phases),
+                'storeId': store_id,
+                'latitude': lat,
+                'longitude': lng
             })
     except Exception as e:
         print(f"Error listing devices: {e}")
@@ -903,26 +1045,45 @@ def init_device_sensors(device_id: str):
 
 @app.route('/api/devices/<device_id>/rename', methods=['POST'])
 def rename_device(device_id: str):
-    name = ((request.get_json(silent=True) or {}).get('name') or '').strip()
+    data = request.get_json(silent=True) or {}
+    name = (data.get('name') or '').strip()
+    store_id = data.get('store_id')
+    lat = data.get('latitude')
+    lng = data.get('longitude')
+    try:
+        lat = float(lat) if lat is not None and str(lat).strip() != '' else None
+        lng = float(lng) if lng is not None and str(lng).strip() != '' else None
+    except (ValueError, TypeError):
+        lat, lng = None, None
+
+    if store_id is not None:
+        store_id = str(store_id).strip() or None
+
+    if not store_id:
+        return jsonify({'ok': False, 'error': 'Silakan pilih toko atau gunakan lokasi kustom'}), 400
+
     ok, err = validate_device_name(name)
     if not ok: return jsonify({'ok': False, 'error': err}), 400
     try:
         with get_db_cursor() as cur:
             cur.execute("""
-                INSERT INTO devices (id, name, online, last_seen)
-                VALUES (%s, %s, FALSE, '---')
-                ON CONFLICT (id) DO UPDATE SET name = %s;
-            """, (device_id, name, name))
+                INSERT INTO devices (id, name, online, last_seen, store_id, latitude, longitude)
+                VALUES (%s, %s, FALSE, '---', %s, %s, %s)
+                ON CONFLICT (id) DO UPDATE SET name = %s, store_id = %s, latitude = %s, longitude = %s;
+            """, (device_id, name, store_id, lat, lng, name, store_id, lat, lng))
             
             with _capture_lock:
                 cstate = _capture_states.get(device_id)
                 if cstate and cstate.get('active'):
                     cstate['device_name'] = name
+                    cstate['store_id'] = store_id
+                    cstate['latitude'] = lat
+                    cstate['longitude'] = lng
                     active_sid = cstate.get('session_id')
                     if active_sid:
-                        cur.execute("UPDATE history SET device_name = %s WHERE session_id = %s", (name, active_sid))
+                        cur.execute("UPDATE history SET device_name = %s, store_id = %s, latitude = %s, longitude = %s WHERE session_id = %s", (name, store_id, lat, lng, active_sid))
 
-        return jsonify({'ok': True, 'name': name, 'timestamp': int(time.time() * 1000)})
+        return jsonify({'ok': True, 'name': name, 'store_id': store_id, 'latitude': lat, 'longitude': lng, 'timestamp': int(time.time() * 1000)})
     except Exception as e:
         return jsonify({'ok': False, 'error': str(e)}), 500
 
@@ -1189,17 +1350,20 @@ def capture_start():
         sid    = f'session_{int(time.time() * 1000)}'
         now_s  = _ts_now()
         sensor_names = {}
+        store_id = None
         try:
             with get_db_cursor() as cur:
-                cur.execute("SELECT sensors FROM devices WHERE id = %s", (did,))
+                cur.execute("SELECT sensors, store_id FROM devices WHERE id = %s", (did,))
                 row = cur.fetchone()
-                if row and row[0]:
-                    sensors_list = row[0] if isinstance(row[0], list) else json.loads(row[0])
-                    for s in sensors_list:
-                        ph = s.get('phase')
-                        nm = s.get('name')
-                        if ph and nm:
-                            sensor_names[ph] = nm
+                if row:
+                    if row[0]:
+                        sensors_list = row[0] if isinstance(row[0], list) else json.loads(row[0])
+                        for s in sensors_list:
+                            ph = s.get('phase')
+                            nm = s.get('name')
+                            if ph and nm:
+                                sensor_names[ph] = nm
+                    store_id = row[1]
         except Exception:
             pass
 
@@ -1207,7 +1371,7 @@ def capture_start():
             'active': True, 'device_id': did, 'device_name': dname or did,
             'session_id': sid, 'session_name': sname, 'interval': iv,
             'count': 0, 'started_at': now_s, 'enabled_phases': hints, 'time_offset_ms': 0,
-            'sensor_names': sensor_names,
+            'sensor_names': sensor_names, 'store_id': store_id,
         })
         if _mqtt_client:
             try:

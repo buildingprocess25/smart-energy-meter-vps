@@ -36,7 +36,7 @@ Membuat fitur pengunggah berkas cadangan (*Uploader*) pada tab **History**.
 ---
 
 ### 4. Analisis Data & Wawasan Listrik (Advanced Analytics)
-Menambahkan modul kalkulasi statistik pintar yang dijalankan di dashboard atau visualizer:
+Menambahkan modul kalkulasi statistik pintar yang dijalankan di backend/visualizer:
 - **Voltage Drop & Surge Alert:** Menandai waktu-waktu di mana tegangan listrik tidak stabil (misalnya di bawah 200V atau di atas 240V).
 - **Peak Load Analysis:** Menganalisis waktu penggunaan daya maksimum (*Power Peak*) beserta rata-ratanya untuk menentukan beban puncak operasional.
 - **Cost Estimation:** Menghitung perkiraan rupiah tagihan listrik berdasarkan akumulasi kWh dikalikan tarif PLN yang berlaku di lokasi tersebut.
@@ -55,3 +55,5 @@ Berikut adalah opsi fitur yang siap dikerjakan sekarang berdasarkan kesiapan sis
 
 ### Opsi C: Google Drive API Setup
 - **Detail:** Mulai memasang library python google client pada backend Flask dan mempersiapkan endpoint `/api/backup/gdrive` untuk mengunggah data.
+
+

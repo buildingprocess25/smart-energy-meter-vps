@@ -2512,35 +2512,103 @@ function renderDeviceList(devices) {
             </div>`;
             }).join('')
             : '<p style="font-size:11px;color:var(--text-tertiary);padding:4px 0">Mendeteksi phase…</p>';
-        const displayName = d.name && d.name !== d.id ? `${d.id} ${d.name}` : d.id;
-        const renameValue = d.name === d.id ? '' : d.name;
+        const isAssigned = d.name && d.name !== d.id;
+        const displayName = isAssigned ? `${d.id} ${d.name}` : d.id;
+        const renameValue = isAssigned ? d.name : '';
+        const storeTagHTML = isAssigned
+            ? `<span class="device-store-tag" title="${_escapeAttr(d.name)}">🏢 ${d.name}</span>`
+            : `<span class="device-store-unassigned-tag" onclick="startRenameDevice('${d.id}')" title="Klik untuk memilih toko">⚠️ Belum ada toko (klik untuk pilih)</span>`;
+
         return `
         <div class="device-item" id="device-item_${d.id}">
             <div class="device-view-mode" id="view_${d.id}">
                 <div class="device-item-info">
                     <span class="device-online-dot ${dotClass}"></span>
-                    <div>
-                        <p class="device-item-name" id="label_${d.id}">${displayName}</p>
+                    <div style="min-width:0; flex:1">
+                        <div class="device-title-row" id="label_wrap_${d.id}">
+                            <strong class="device-id-title">${d.id}</strong>
+                            ${storeTagHTML}
+                        </div>
                         <p class="device-item-id">${d.phaseCount || 0} Sensor · Last seen: ${d.lastSeen || '---'}</p>
                     </div>
                 </div>
                 <div style="display:flex;gap:4px">
-                    <button class="device-edit-btn" onclick="startRenameDevice('${d.id}')" title="Ubah nama">${editSVG}</button>
+                    <button class="device-edit-btn" onclick="startRenameDevice('${d.id}')" title="Pilih Toko">${editSVG}</button>
                     <button class="device-delete-btn" onclick="deleteDevice('${d.id}', '${_escapeAttr(displayName)}')" title="Hapus device">${deleteSVG}</button>
                 </div>
             </div>
             <div class="device-edit-mode" id="edit_${d.id}" style="display:none">
                 <div class="device-item-info">
                     <span class="device-online-dot ${dotClass}"></span>
-                    <div class="device-edit-field">
-                        <input type="text" class="device-rename-input-inline" id="rename_${d.id}"
-                            value="${renameValue}" placeholder="Nama Lokasi / Toko..." maxlength="40" autocomplete="off"
-                            onkeydown="if(event.key==='Enter') saveDeviceName('${d.id}'); else if(event.key==='Escape') cancelRenameDevice('${d.id}')">
+                    <div class="device-edit-field store-combobox-wrapper" id="store-wrapper_${d.id}">
+                        <!-- Combobox Trigger Button -->
+                        <div class="store-combobox-trigger" id="trigger_${d.id}" onclick="toggleStoreDropdown('${d.id}')">
+                            <span class="store-trigger-text" id="trigger_text_${d.id}">${renameValue ? '🏢 ' + renameValue : 'Pilih toko...'}</span>
+                            <span class="store-trigger-icon" id="trigger_icon_${d.id}">▼</span>
+                        </div>
+                        <input type="hidden" id="rename_${d.id}" value="${renameValue}">
+                        <input type="hidden" id="store_id_${d.id}" value="${d.storeId || ''}">
+
+                        <!-- Dropdown Popover Panel -->
+                        <div class="store-dropdown-panel" id="store_dropdown_${d.id}" style="display:none">
+                            <div class="store-dropdown-header">
+                                <div class="store-mode-tabs">
+                                    <button type="button" class="store-tab-btn active" id="tab_master_${d.id}" onclick="switchStoreTab('${d.id}', 'master')">
+                                        🏢 Master Toko
+                                    </button>
+                                    <button type="button" class="store-tab-btn" id="tab_custom_${d.id}" onclick="switchStoreTab('${d.id}', 'custom')">
+                                        📍 Lokasi Kustom
+                                    </button>
+                                </div>
+                            </div>
+
+                            <!-- Panel Master Toko -->
+                            <div id="store_panel_master_${d.id}">
+                                <!-- Dedicated Fresh Search Input (No backspace needed!) -->
+                                <div class="store-search-box-row">
+                                    <span class="store-search-icon">🔍</span>
+                                    <input type="text" class="store-popover-search-input" id="search_input_${d.id}"
+                                        placeholder="Cari kode atau nama toko..." autocomplete="off"
+                                        oninput="handleStoreSearchInput('${d.id}', this.value)"
+                                        onkeydown="if(event.key==='Enter') saveDeviceName('${d.id}'); else if(event.key==='Escape') cancelRenameDevice('${d.id}')">
+                                    <div class="store-search-spinner" id="store_spinner_${d.id}" style="display:none"></div>
+                                </div>
+                                <div style="padding:6px 6px 2px 6px">
+                                    <button type="button" class="store-quick-demo-btn" onclick="selectDemoStore('${d.id}')">
+                                        🧪 Toko Testing (Head Office)
+                                    </button>
+                                </div>
+                                <div class="store-dropdown-list" id="store_list_${d.id}"></div>
+                            </div>
+
+                            <!-- Panel Custom Location -->
+                            <div class="store-custom-form" id="store_panel_custom_${d.id}" style="display:none">
+                                <div class="custom-field-group">
+                                    <label class="custom-label">Nama Lokasi / Keperluan:</label>
+                                    <input type="text" class="custom-input" id="custom_name_${d.id}" placeholder="Misal: Lab IoT R&D, DC Balaraja, Toko Baru..." autocomplete="off">
+                                </div>
+                                <div class="custom-field-group">
+                                    <label class="custom-label">Titik Koordinat / Link Google Maps:</label>
+                                    <input type="text" class="custom-input" id="custom_coords_${d.id}" placeholder="-6.2238, 106.6508 (atau paste link Google Maps)" autocomplete="off">
+                                </div>
+                                <div class="custom-actions-row">
+                                    <button type="button" class="btn-gps-detect" onclick="detectGPSLocation('${d.id}')">
+                                        📍 Ambil GPS Saya
+                                    </button>
+                                    <button type="button" class="btn-gps-ho" onclick="setHOGPSLocation('${d.id}')">
+                                        🏢 Koordinat HO
+                                    </button>
+                                </div>
+                                <button type="button" class="btn-apply-custom" onclick="applyCustomLocation('${d.id}')">
+                                    ✔ Gunakan Lokasi Kustom Ini
+                                </button>
+                            </div>
+                        </div>
                         <p class="device-edit-hint"><kbd>Enter</kbd> simpan &nbsp;·&nbsp; <kbd>Esc</kbd> batal</p>
                     </div>
                 </div>
                 <div class="device-edit-actions">
-                    <button class="device-confirm-btn" onclick="saveDeviceName('${d.id}')"     title="Simpan">${checkSVG}</button>
+                    <button class="device-confirm-btn" onclick="saveDeviceName('${d.id}')" title="Simpan">${checkSVG}</button>
                     <button class="device-cancel-btn"  onclick="cancelRenameDevice('${d.id}')" title="Batal">${closeSVG}</button>
                 </div>
             </div>
@@ -2548,51 +2616,354 @@ function renderDeviceList(devices) {
         </div>`;
     }).join('');
 }
+
+let _storeSearchDebounceTimer = null;
+let _storeSearchResultsCache = {};
+let _selectedStoreData = {};
+
+function switchStoreTab(deviceId, tab) {
+    const tabMaster = $(`tab_master_${deviceId}`);
+    const tabCustom = $(`tab_custom_${deviceId}`);
+    const panelMaster = $(`store_panel_master_${deviceId}`);
+    const panelCustom = $(`store_panel_custom_${deviceId}`);
+
+    if (tab === 'custom') {
+        if (tabMaster) tabMaster.classList.remove('active');
+        if (tabCustom) tabCustom.classList.add('active');
+        if (panelMaster) panelMaster.style.display = 'none';
+        if (panelCustom) panelCustom.style.display = 'flex';
+    } else {
+        if (tabMaster) tabMaster.classList.add('active');
+        if (tabCustom) tabCustom.classList.remove('active');
+        if (panelMaster) panelMaster.style.display = 'block';
+        if (panelCustom) panelCustom.style.display = 'none';
+        const searchInput = $(`search_input_${deviceId}`);
+        if (searchInput) searchInput.focus();
+    }
+}
+
+function parseGoogleMapsCoords(inputStr) {
+    if (!inputStr) return null;
+    const str = inputStr.trim();
+
+    // 1. Google Maps URL (@lat,lng or ?q=lat,lng or ll=lat,lng)
+    const urlMatch = str.match(/@(-?\d+\.\d+),(-?\d+\.\d+)/)
+        || str.match(/[?&]q=(-?\d+\.\d+),(-?\d+\.\d+)/)
+        || str.match(/[?&]ll=(-?\d+\.\d+),(-?\d+\.\d+)/)
+        || str.match(/place\/[^\/]*\/@?(-?\d+\.\d+),(-?\d+\.\d+)/);
+
+    if (urlMatch) {
+        return {
+            lat: parseFloat(urlMatch[1]),
+            lng: parseFloat(urlMatch[2])
+        };
+    }
+
+    // 2. Format standar Google Maps copy: "-6.223845, 106.650812" atau "-6.223845 106.650812"
+    const directMatch = str.match(/^(-?\d+\.?\d*)[,\s;]+(-?\d+\.?\d*)$/);
+    if (directMatch) {
+        const lat = parseFloat(directMatch[1]);
+        const lng = parseFloat(directMatch[2]);
+        if (!isNaN(lat) && !isNaN(lng) && lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180) {
+            return { lat, lng };
+        }
+    }
+    return null;
+}
+
+function detectGPSLocation(deviceId) {
+    if (!navigator.geolocation) {
+        showModal('GPS Tidak Tersedia', 'Browser Anda tidak mendukung deteksi Geolocation GPS.', 'warning');
+        return;
+    }
+    const coordsInput = $(`custom_coords_${deviceId}`);
+    
+    showModal('Mendeteksi GPS...', 'Sedang mengambil titik koordinat GPS perangkat Anda...', 'info');
+    navigator.geolocation.getCurrentPosition(
+        (pos) => {
+            closeModal();
+            const lat = pos.coords.latitude.toFixed(6);
+            const lng = pos.coords.longitude.toFixed(6);
+            if (coordsInput) coordsInput.value = `${lat}, ${lng}`;
+            showModal('GPS Terdeteksi', `Koordinat berhasil diambil:\n${lat}, ${lng}`, 'success');
+        },
+        (err) => {
+            closeModal();
+            showModal('Gagal Deteksi GPS', `Tidak dapat mengambil lokasi GPS: ${err.message}. Anda bisa paste koordinat Google Maps atau klik "Koordinat HO".`, 'warning');
+        },
+        { enableHighAccuracy: true, timeout: 10000 }
+    );
+}
+
+function setHOGPSLocation(deviceId) {
+    const coordsInput = $(`custom_coords_${deviceId}`);
+    if (coordsInput) coordsInput.value = '-6.223800, 106.650800';
+}
+
+function applyCustomLocation(deviceId) {
+    const nameInput = $(`custom_name_${deviceId}`);
+    const coordsInput = $(`custom_coords_${deviceId}`);
+
+    const customName = nameInput?.value.trim();
+    if (!customName) {
+        showModal('Nama Diperlukan', 'Silakan isi nama lokasi kustom (misal: Lab IoT R&D / Toko Baru).', 'warning');
+        return;
+    }
+
+    let lat = -6.2238;
+    let lng = 106.6508;
+    const rawCoords = coordsInput?.value.trim();
+
+    if (rawCoords) {
+        const parsed = parseGoogleMapsCoords(rawCoords);
+        if (parsed) {
+            lat = parsed.lat;
+            lng = parsed.lng;
+        } else {
+            showModal('Format Tidak Valid', 'Format koordinat tidak dikenali.\n\nContoh format yang didukung:\n• -6.223845, 106.650812 (hasil copy Google Maps)\n• Link URL Google Maps', 'warning');
+            return;
+        }
+    }
+
+    const customStore = {
+        id: 'CUSTOM',
+        code: 'CUSTOM',
+        name: customName,
+        branch: 'NON-TOKO',
+        latitude: lat,
+        longitude: lng,
+        is_custom: true
+    };
+
+    selectStoreItem(deviceId, customStore);
+}
+
+async function fetchStoresApi(query = '') {
+    const qKey = query.trim().toLowerCase();
+    if (_storeSearchResultsCache[qKey]) {
+        return _storeSearchResultsCache[qKey];
+    }
+    try {
+        const res = await fetch(`/api/stores?q=${encodeURIComponent(query.trim())}`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        const stores = data.stores || [];
+        _storeSearchResultsCache[qKey] = stores;
+        return stores;
+    } catch (e) {
+        console.error("Error fetching stores:", e);
+        return [];
+    }
+}
+
+function handleStoreSearchInput(deviceId, val) {
+    if (_storeSearchDebounceTimer) clearTimeout(_storeSearchDebounceTimer);
+    const spinner = $(`store_spinner_${deviceId}`);
+    if (spinner) spinner.style.display = 'block';
+
+    _storeSearchDebounceTimer = setTimeout(async () => {
+        const stores = await fetchStoresApi(val);
+        if (spinner) spinner.style.display = 'none';
+        renderStoreDropdownItems(deviceId, stores, val);
+    }, 300);
+}
+
+function openStoreDropdown(deviceId) {
+    const panel = $(`store_dropdown_${deviceId}`);
+    const trigger = $(`trigger_${deviceId}`);
+    if (panel) panel.style.display = 'flex';
+    if (trigger) trigger.classList.add('active');
+
+    // Fresh search input, clear previous query and focus immediately!
+    const searchInput = $(`search_input_${deviceId}`);
+    if (searchInput) {
+        searchInput.value = '';
+        setTimeout(() => searchInput.focus(), 50);
+    }
+    
+    // Auto-load initial list
+    const spinner = $(`store_spinner_${deviceId}`);
+    if (spinner) spinner.style.display = 'block';
+    fetchStoresApi('').then(stores => {
+        if (spinner) spinner.style.display = 'none';
+        renderStoreDropdownItems(deviceId, stores, '');
+    });
+}
+
+function closeStoreDropdown(deviceId) {
+    const panel = $(`store_dropdown_${deviceId}`);
+    const trigger = $(`trigger_${deviceId}`);
+    if (panel) panel.style.display = 'none';
+    if (trigger) trigger.classList.remove('active');
+}
+
+function toggleStoreDropdown(deviceId) {
+    const panel = $(`store_dropdown_${deviceId}`);
+    if (panel && panel.style.display !== 'none') {
+        closeStoreDropdown(deviceId);
+    } else {
+        openStoreDropdown(deviceId);
+    }
+}
+
+let _currentStoresList = {};
+
+function renderStoreDropdownItems(deviceId, stores, currentQuery) {
+    const list = $(`store_list_${deviceId}`);
+    const panel = $(`store_dropdown_${deviceId}`);
+    if (!list || !panel) return;
+
+    if (!stores || stores.length === 0) {
+        list.innerHTML = `<div class="store-dropdown-empty">Tidak ada toko ditemukan</div>`;
+        return;
+    }
+
+    stores.forEach(s => {
+        if (s.id) _currentStoresList[s.id] = s;
+    });
+
+    list.innerHTML = stores.map(s => {
+        const isDemo = s.is_demo || s.code === 'DEMO-HO';
+        const coordsText = (s.latitude !== null && s.longitude !== null && s.latitude !== undefined) 
+            ? `${Number(s.latitude).toFixed(4)}, ${Number(s.longitude).toFixed(4)}` 
+            : 'Tanpa Koordinat';
+        const safeName = _escapeAttr(s.name || '');
+        const safeBranch = _escapeAttr(s.branch || '-');
+        return `
+        <div class="store-dropdown-item ${isDemo ? 'is-demo' : ''}" onclick="selectStoreById('${deviceId}', '${s.id}')">
+            <div class="store-item-main">
+                <span class="store-item-code">${s.code || 'TOKO'}</span>
+                <span class="store-item-name">${safeName}</span>
+            </div>
+            <div class="store-item-meta">
+                <span class="store-item-branch">📍 ${safeBranch}</span>
+                <span>•</span>
+                <span class="store-item-coords">🧭 ${coordsText}</span>
+            </div>
+        </div>`;
+    }).join('');
+}
+
+function selectStoreById(deviceId, storeId) {
+    const store = _currentStoresList[storeId];
+    if (store) {
+        selectStoreItem(deviceId, store);
+    }
+}
+
+function selectStoreItem(deviceId, store) {
+    try {
+        const sObj = typeof store === 'string' ? JSON.parse(store) : store;
+        const renameInput = $(`rename_${deviceId}`);
+        const storeIdInput = $(`store_id_${deviceId}`);
+        const triggerText = $(`trigger_text_${deviceId}`);
+        const formattedName = sObj.code ? `[${sObj.code}] ${sObj.name}` : sObj.name;
+        
+        if (renameInput) renameInput.value = formattedName;
+        if (storeIdInput) storeIdInput.value = sObj.id || '';
+        if (triggerText) triggerText.textContent = `🏢 ${formattedName}`;
+        _selectedStoreData[deviceId] = sObj;
+        closeStoreDropdown(deviceId);
+    } catch (e) {
+        console.error("Error selecting store:", e);
+    }
+}
+
+function selectDemoStore(deviceId) {
+    selectStoreItem(deviceId, {
+        id: 'demo-head-office-001',
+        code: 'DEMO-HO',
+        name: 'Alfamart Head Office (Testing IoT)',
+        branch: 'HEAD OFFICE',
+        latitude: -6.2238,
+        longitude: 106.6508,
+        is_demo: true
+    });
+}
+
+document.addEventListener('click', (e) => {
+    if (!e.target.closest('.store-combobox-wrapper') && !e.target.closest('.device-edit-btn') && !e.target.closest('.device-store-unassigned-tag')) {
+        document.querySelectorAll('.store-dropdown-panel').forEach(p => p.style.display = 'none');
+        document.querySelectorAll('.store-combobox-trigger').forEach(t => t.classList.remove('active'));
+    }
+});
+
 function startRenameDevice(deviceId) {
     _renamingDeviceId = deviceId;
+    const devItem = $(`device-item_${deviceId}`);
+    if (devItem) devItem.classList.add('is-editing');
     $(`view_${deviceId}`).style.display = 'none';
     $(`edit_${deviceId}`).style.display = 'flex';
-    const input = $(`rename_${deviceId}`);
-    input.focus(); input.select();
+    openStoreDropdown(deviceId);
 }
+
 function cancelRenameDevice(deviceId) {
     _renamingDeviceId = null;
-    const label = $(`label_${deviceId}`), input = $(`rename_${deviceId}`);
-    if (label && input) input.value = label.textContent;
+    const devItem = $(`device-item_${deviceId}`);
+    if (devItem) devItem.classList.remove('is-editing');
+    const input = $(`rename_${deviceId}`);
+    const triggerText = $(`trigger_text_${deviceId}`);
+    const dev = _deviceListCache.find(d => d.id === deviceId);
+    const originalName = dev && dev.name && dev.name !== dev.id ? dev.name : '';
+    if (input) input.value = originalName;
+    if (triggerText) triggerText.textContent = originalName ? `🏢 ${originalName}` : 'Pilih toko...';
+    closeStoreDropdown(deviceId);
     $(`edit_${deviceId}`).style.display = 'none';
     $(`view_${deviceId}`).style.display = 'flex';
-    input.disabled = false;
 }
 async function saveDeviceName(deviceId) {
     const input = $(`rename_${deviceId}`);
+    const storeIdInput = $(`store_id_${deviceId}`);
     const newName = input?.value.trim();
-    if (!newName) { await showModal('Error', 'Nama tidak boleh kosong', 'warning'); return; }
-    if (newName.length < 2) { await showModal('Error', 'Nama minimal 2 karakter', 'warning'); return; }
-    if (newName.length > 100) { await showModal('Error', 'Nama maksimal 100 karakter', 'warning'); return; }
-    if (/[\/\.\$\#\[\]]/.test(newName)) { await showModal('Error', 'Karakter tidak diizinkan: / . $ # [ ]', 'warning'); return; }
+    const storeId = storeIdInput?.value.trim() || _selectedStoreData[deviceId]?.id || null;
+    const storeData = _selectedStoreData[deviceId] || {};
+
+    if (!storeId || !newName) {
+        await showModal('Pilih Toko', 'Silakan klik dan pilih salah satu toko dari daftar pencarian dropdown atau gunakan Lokasi Kustom.', 'warning');
+        return;
+    }
+
     const oldName = _deviceListCache.find(d => d.id === deviceId)?.name || deviceId;
     const dev = _deviceListCache.find(d => d.id === deviceId);
-    if (dev) dev.name = newName;
+    if (dev) {
+        dev.name = newName;
+        dev.storeId = storeId;
+        dev.latitude = storeData.latitude;
+        dev.longitude = storeData.longitude;
+    }
     
-    const label = $(`label_${deviceId}`);
     const displayNewName = newName && newName !== deviceId ? `${deviceId} ${newName}` : deviceId;
-    if (label) label.textContent = displayNewName;
+    const labelWrap = $(`label_wrap_${deviceId}`);
+    if (labelWrap) {
+        labelWrap.innerHTML = `
+            <strong class="device-id-title">${deviceId}</strong>
+            <span class="device-store-tag" title="${_escapeAttr(newName)}">🏢 ${newName}</span>
+        `;
+    }
     
     if (deviceId === selectedDeviceId) {
         selectedDeviceName = displayNewName;
         [DOM.deviceSelect, DOM.summaryDeviceSelect].forEach(sel => {
-            if (sel) Array.from(sel.options).forEach(opt => { if (opt.value === deviceId) opt.text = displayNewName; });
+            if (sel) Array.from(sel.options).forEach(opt => { 
+                if (opt.value === deviceId) opt.text = displayNewName; 
+            });
         });
     }
     _renamingDeviceId = null;
     cancelRenameDevice(deviceId);
-    showModal('Berhasil', `Nama device diubah menjadi:\n"${newName}"`, 'success');
+    showModal('Berhasil', `Nama device diubah menjadi:\n"${displayNewName}"`, 'success');
     try {
         const controller = new AbortController();
         const tid = setTimeout(() => controller.abort(), 8000);
         const response = await fetch(`/api/devices/${deviceId}/rename`, {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ name: newName }), signal: controller.signal,
+            body: JSON.stringify({ 
+                name: newName, 
+                store_id: storeId,
+                latitude: storeData.latitude,
+                longitude: storeData.longitude
+            }), 
+            signal: controller.signal,
         });
         clearTimeout(tid);
         if (!response.ok) { const e = await response.json().catch(() => ({})); throw new Error(e.error || `HTTP ${response.status}`); }
@@ -2600,12 +2971,22 @@ async function saveDeviceName(deviceId) {
         if (!json.ok) throw new Error(json.error || 'Gagal menyimpan ke database');
     } catch (e) {
         if (dev) dev.name = oldName;
-        const displayOldName = oldName && oldName !== deviceId ? `${deviceId} ${oldName}` : deviceId;
-        if (label) label.textContent = displayOldName;
+        const isOldAssigned = oldName && oldName !== deviceId;
+        const displayOldName = isOldAssigned ? `${deviceId} ${oldName}` : deviceId;
+        if (labelWrap) {
+            labelWrap.innerHTML = `
+                <strong class="device-id-title">${deviceId}</strong>
+                ${isOldAssigned 
+                    ? `<span class="device-store-tag" title="${_escapeAttr(oldName)}">🏢 ${oldName}</span>` 
+                    : `<span class="device-store-unassigned-tag" onclick="startRenameDevice('${deviceId}')" title="Klik untuk memilih toko">⚠️ Belum ada toko (klik untuk pilih)</span>`}
+            `;
+        }
         if (deviceId === selectedDeviceId) {
             selectedDeviceName = displayOldName;
             [DOM.deviceSelect, DOM.summaryDeviceSelect].forEach(sel => {
-                if (sel) Array.from(sel.options).forEach(opt => { if (opt.value === displayOldName) opt.text = displayOldName; });
+                if (sel) Array.from(sel.options).forEach(opt => { 
+                    if (opt.value === displayOldName) opt.text = displayOldName; 
+                });
             });
         }
         closeModal();
