@@ -3650,8 +3650,7 @@ let historyData = [], recordsBySession = {};
 async function _attachHistoryListener(deviceId, isAutoPoll = false) {
     try {
         // Muat seluruh sesi dari seluruh perangkat agar tab History menjadi pusat arsip global
-        const res = await fetch(`/api/sessions`);
-        const list = await res.json();
+        const list = await safeFetchJson(`/api/sessions`);
 
         let totalCount = 0;
         historyData = [];
@@ -4810,16 +4809,9 @@ async function syncCaptureStatus() {
             if (DOM.intervalDisplay)
                 DOM.intervalDisplay.textContent = `Current: ${serverSec} seconds`;
         }
-        // Refresh dari DB setiap 15 detik hanya jika tab History sedang aktif
-        const now = Date.now();
+        // Perbarui UI sesi aktif dari status memori tanpa request database
         if (captureActive && selectedDeviceId) {
-            const isHistoryTabActive = $('historyContent')?.classList.contains('active');
-            if (isHistoryTabActive && now - _lastHistoryRefresh > 15000) {
-                _lastHistoryRefresh = now;
-                await _attachHistoryListener(selectedDeviceId, true);
-            } else {
-                buildSessionUI(true); // render ulang halus dengan isAutoPoll = true
-            }
+            buildSessionUI(true);
         }
         const recBadge = $('recordingBadge');
         const recInfo = $('recBadgeInfo');

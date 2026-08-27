@@ -442,6 +442,13 @@ def _load_capture_states():
         print(f"Error loading capture states: {e}")
 
 def _data_hash(raw): return hashlib.md5(json.dumps(raw, sort_keys=True).encode()).hexdigest() if raw else None
+_sessions_cache: dict[str, dict] = {}
+_sessions_cache_lock = threading.Lock()
+
+def _invalidate_sessions_cache():
+    with _sessions_cache_lock:
+        _sessions_cache.clear()
+
 _hourly_stop = threading.Event()
 _last_write_per_device: dict[str, str] = {}  # guard duplikat per device
 _live_buffer_last_push: dict[str, float] = {}  # waktu terakhir data dipush ke live buffer per device
@@ -729,25 +736,30 @@ def _do_capture_io(device_id, session_id, sched_ts, interval, last_hash, last_ch
         phases = enabled_phases if enabled_phases else sorted([k for k in (raw or {}) if _PHASE_RE.match(k)], key=lambda x: int(x[1:]))
         if not phases: return
         
-        with get_db_cursor() as cur:
-            for ph in phases:
-                pd = {} if offline else ((raw or {}).get(ph) if isinstance((raw or {}).get(ph), dict) else {})
-                phase_offline = offline or not bool(pd)
-                def f(k):
-                    try: return float((pd or {}).get(k) or 0)
-                    except: return 0.0
-                cur.execute("""
+        insert_rows = []
+        for ph in phases:
+            pd = {} if offline else ((raw or {}).get(ph) if isinstance((raw or {}).get(ph), dict) else {})
+            phase_offline = offline or not bool(pd)
+            def f(k):
+                try: return float((pd or {}).get(k) or 0)
+                except: return 0.0
+            insert_rows.append((
+                device_id, ph, ts, epoch_val,
+                f('Voltage (V)'), f('Current (A)'), f('Power (W)'),
+                f('Frequency (Hz)'), f('Active Energy (kWh)'), f('Power Factor'),
+                phase_offline, session_id, sname, sensor_names.get(ph, ph), dev_name, store_id
+            ))
+
+        if insert_rows:
+            from psycopg2.extras import execute_values
+            with get_db_cursor() as cur:
+                execute_values(cur, """
                     INSERT INTO history (
                         device_id, phase, timestamp, epoch,
                         voltage, current, power, frequency, energy, power_factor,
                         offline, session_id, session_name, phase_name, device_name, store_id
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                """, (
-                    device_id, ph, ts, epoch_val,
-                    f('Voltage (V)'), f('Current (A)'), f('Power (W)'),
-                    f('Frequency (Hz)'), f('Active Energy (kWh)'), f('Power Factor'),
-                    phase_offline, session_id, sname, sensor_names.get(ph, ph), dev_name, store_id
-                ))
+                    ) VALUES %s
+                """, insert_rows)
                 
         with _capture_lock:
             cstate = _get_device_capture_state(device_id)
@@ -1391,6 +1403,7 @@ def capture_stop():
         stopped = _stop_device_capture(did)
         if not stopped:
             return jsonify({'ok': False, 'error': f'Tidak ada capture aktif untuk perangkat {did}'}), 400
+        _invalidate_sessions_cache()
         return jsonify({'ok': True, 'device_id': did})
     except Exception as e:
         print(f"Error in capture_stop: {e}")
@@ -1447,6 +1460,7 @@ def capture_shift_time():
                     SET timestamp = %s
                     WHERE id = %s
                 """, (new_ts, rid))
+        _invalidate_sessions_cache()
         return jsonify({'ok': True})
     except Exception as e:
         return jsonify({'ok': False, 'error': str(e)}), 500
@@ -1456,70 +1470,84 @@ def capture_shift_time():
 def get_sessions(device_id: str = 'all'):
     try:
         is_all = not device_id or device_id.lower() == 'all'
-        with get_db_cursor() as cur:
-            if is_all:
-                cur.execute("""
-                    SELECT session_id, 
-                           MAX(session_name) as session_name,
-                           to_char(to_timestamp(MIN(epoch)/1000.0) AT TIME ZONE 'Asia/Jakarta', 'HH24:MI:SS DD/MM/YYYY') as start_time,
-                           to_char(to_timestamp(MAX(epoch)/1000.0) AT TIME ZONE 'Asia/Jakarta', 'HH24:MI:SS DD/MM/YYYY') as end_time,
-                           COUNT(*) as record_count,
-                           MIN(epoch) as start_epoch,
-                           ARRAY_AGG(DISTINCT phase) as phases,
-                           MAX(device_name) as snapshot_device_name,
-                           MAX(device_id) as device_id
-                    FROM history
-                    GROUP BY session_id
-                    ORDER BY start_epoch DESC
-                    LIMIT 200;
-                """)
-            else:
-                cur.execute("""
-                    SELECT session_id, 
-                           MAX(session_name) as session_name,
-                           to_char(to_timestamp(MIN(epoch)/1000.0) AT TIME ZONE 'Asia/Jakarta', 'HH24:MI:SS DD/MM/YYYY') as start_time,
-                           to_char(to_timestamp(MAX(epoch)/1000.0) AT TIME ZONE 'Asia/Jakarta', 'HH24:MI:SS DD/MM/YYYY') as end_time,
-                           COUNT(*) as record_count,
-                           MIN(epoch) as start_epoch,
-                           ARRAY_AGG(DISTINCT phase) as phases,
-                           MAX(device_name) as snapshot_device_name,
-                           MAX(device_id) as device_id
-                    FROM history
-                    WHERE device_id = %s
-                    GROUP BY session_id
-                    ORDER BY start_epoch DESC
-                    LIMIT 200;
-                """, (device_id,))
-            rows = cur.fetchall()
+        cache_key = 'all' if is_all else device_id
+        now_t = time.time()
 
-        # Ambil nama device dari database sebagai fallback
-        device_names_map = {}
-        try:
+        cached = None
+        with _sessions_cache_lock:
+            entry = _sessions_cache.get(cache_key)
+            if entry and (now_t - entry.get('timestamp', 0) < 25):  # 25 detik cache
+                cached = entry.get('data')
+
+        if cached is None:
             with get_db_cursor() as cur:
-                cur.execute("SELECT id, name FROM devices")
-                for d_id, d_name in cur.fetchall():
-                    if d_name:
-                        device_names_map[d_id] = d_name
-        except Exception:
-            pass
+                if is_all:
+                    cur.execute("""
+                        SELECT session_id, 
+                               MAX(session_name) as session_name,
+                               to_char(to_timestamp(MIN(epoch)/1000.0) AT TIME ZONE 'Asia/Jakarta', 'HH24:MI:SS DD/MM/YYYY') as start_time,
+                               to_char(to_timestamp(MAX(epoch)/1000.0) AT TIME ZONE 'Asia/Jakarta', 'HH24:MI:SS DD/MM/YYYY') as end_time,
+                               COUNT(*) as record_count,
+                               MIN(epoch) as start_epoch,
+                               ARRAY_AGG(DISTINCT phase) as phases,
+                               MAX(device_name) as snapshot_device_name,
+                               MAX(device_id) as device_id
+                        FROM history
+                        GROUP BY session_id
+                        ORDER BY start_epoch DESC
+                        LIMIT 100;
+                    """)
+                else:
+                    cur.execute("""
+                        SELECT session_id, 
+                               MAX(session_name) as session_name,
+                               to_char(to_timestamp(MIN(epoch)/1000.0) AT TIME ZONE 'Asia/Jakarta', 'HH24:MI:SS DD/MM/YYYY') as start_time,
+                               to_char(to_timestamp(MAX(epoch)/1000.0) AT TIME ZONE 'Asia/Jakarta', 'HH24:MI:SS DD/MM/YYYY') as end_time,
+                               COUNT(*) as record_count,
+                               MIN(epoch) as start_epoch,
+                               ARRAY_AGG(DISTINCT phase) as phases,
+                               MAX(device_name) as snapshot_device_name,
+                               MAX(device_id) as device_id
+                        FROM history
+                        WHERE device_id = %s
+                        GROUP BY session_id
+                        ORDER BY start_epoch DESC
+                        LIMIT 100;
+                    """, (device_id,))
+                rows = cur.fetchall()
 
-        sessions = []
-        for row in rows:
-            sid, sname, start_time, end_time, count, start_epoch, phases_arr, snapshot_dname, row_did = row
-            phases_list = sorted(phases_arr or [], key=lambda x: int(x[1:]) if x[1:].isdigit() else 0)
-            cur_dname = device_names_map.get(row_did, row_did)
-            sessions.append({
-                'id': sid,
-                'name': sname or 'Tanpa nama',
-                'startTime': start_time or '---',
-                'endTime': end_time or '---',
-                'recordCount': count or 0,
-                'startTimestamp': start_epoch or 0,
-                'deviceId': row_did,
-                'deviceName': snapshot_dname or cur_dname,
-                'phases': phases_list,
-                'phaseNames': {ph: ph for ph in phases_list},
-            })
+            device_names_map = {}
+            try:
+                with get_db_cursor() as cur:
+                    cur.execute("SELECT id, name FROM devices")
+                    for d_id, d_name in cur.fetchall():
+                        if d_name:
+                            device_names_map[d_id] = d_name
+            except Exception:
+                pass
+
+            cached = []
+            for row in rows:
+                sid, sname, start_time, end_time, count, start_epoch, phases_arr, snapshot_dname, row_did = row
+                phases_list = sorted(phases_arr or [], key=lambda x: int(x[1:]) if x[1:].isdigit() else 0)
+                cur_dname = device_names_map.get(row_did, row_did)
+                cached.append({
+                    'id': sid,
+                    'name': sname or 'Tanpa nama',
+                    'startTime': start_time or '---',
+                    'endTime': end_time or '---',
+                    'recordCount': count or 0,
+                    'startTimestamp': start_epoch or 0,
+                    'deviceId': row_did,
+                    'deviceName': snapshot_dname or cur_dname,
+                    'phases': phases_list,
+                    'phaseNames': {ph: ph for ph in phases_list},
+                })
+
+            with _sessions_cache_lock:
+                _sessions_cache[cache_key] = {'data': cached, 'timestamp': now_t}
+
+        sessions = [dict(s) for s in cached]
 
         # Gabungkan active session dari memory jika sedang berjalan
         with _capture_lock:
@@ -1532,7 +1560,7 @@ def get_sessions(device_id: str = 'all'):
                         active_count = cstate.get('count', 0)
                         active_phases = cstate.get('enabled_phases', [])
                         active_names = cstate.get('sensor_names', {})
-                        cur_dname = device_names_map.get(active_did, active_did)
+                        cur_dname = cstate.get('device_name') or active_did
 
                         existing = next((s for s in sessions if s['id'] == active_sid), None)
                         if existing:
@@ -1546,7 +1574,7 @@ def get_sessions(device_id: str = 'all'):
                                 'recordCount': active_count,
                                 'startTimestamp': int(time.time() * 1000),
                                 'deviceId': active_did,
-                                'deviceName': cstate.get('device_name') or cur_dname,
+                                'deviceName': cur_dname,
                                 'phases': active_phases,
                                 'phaseNames': active_names or {ph: ph for ph in active_phases},
                             })
@@ -1743,6 +1771,7 @@ def rename_session():
                 SET session_name = %s
                 WHERE session_id = %s
             """, (name, sid))
+        _invalidate_sessions_cache()
         return jsonify({'ok': True})
     except Exception as e:
         return jsonify({'ok': False, 'error': str(e)}), 500
@@ -1762,6 +1791,7 @@ def rename_session_sensor():
                 SET phase_name = %s
                 WHERE session_id = %s AND phase = %s
             """, (name, sid, phase.upper()))
+        _invalidate_sessions_cache()
         return jsonify({'ok': True})
     except Exception as e:
         return jsonify({'ok': False, 'error': str(e)}), 500
@@ -1777,6 +1807,7 @@ def delete_session():
                 DELETE FROM history
                 WHERE session_id = %s
             """, (sid,))
+        _invalidate_sessions_cache()
         return jsonify({'ok': True})
     except Exception as e:
         return jsonify({'ok': False, 'error': str(e)}), 500
@@ -1792,6 +1823,7 @@ def clear_all_sessions():
                 DELETE FROM history
                 WHERE device_id = %s
             """, (did,))
+        _invalidate_sessions_cache()
         return jsonify({'ok': True})
     except Exception as e:
         return jsonify({'ok': False, 'error': str(e)}), 500
