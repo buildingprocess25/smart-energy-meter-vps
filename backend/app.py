@@ -596,7 +596,7 @@ def _live_buffer_worker() -> None:
                 is_offline = (now - last_seen > 300) or not raw
 
                 if did not in _device_live_buffer:
-                    _device_live_buffer[did] = deque(maxlen=600)
+                    _device_live_buffer[did] = deque(maxlen=1200)
 
                 if is_offline:
                     if not _device_is_offline.get(did, False):
@@ -607,23 +607,11 @@ def _live_buffer_worker() -> None:
                     if meta and meta['online'] != False:
                         offline_updates.append(did)
                 else:
-                    h = _data_hash(raw)
-                    data_changed = _device_live_hash.get(did) != h
-                    time_since_push = now - _live_buffer_last_push.get(did, 0)
-                    should_heartbeat = time_since_push >= HEARTBEAT_INTERVAL
-
-                    if data_changed:
-                        _device_live_hash[did] = h
-                        _device_last_change_ms[did] = now_ms
-                        _device_is_offline[did] = False
-                        _device_live_buffer[did].append({'timestamp': now_ms, 'data': raw})
-                        _live_buffer_last_push[did] = now
-                    elif should_heartbeat:
-                        # Heartbeat: push data terakhir lagi walau tidak berubah
-                        # Tujuannya agar frontend tahu device masih online dan rawRealtimeData tidak stale
-                        _device_is_offline[did] = False
-                        _device_live_buffer[did].append({'timestamp': now_ms, 'data': raw})
-                        _live_buffer_last_push[did] = now
+                    _device_is_offline[did] = False
+                    # Simpan snapshot kontinu ke RAM buffer setiap loop (~3 detik)
+                    raw_copy = json.loads(json.dumps(raw)) if raw else {}
+                    _device_live_buffer[did].append({'timestamp': now_ms, 'data': raw_copy})
+                    _live_buffer_last_push[did] = now
 
                     meta = devices_meta.get(did)
                     status_changed = not meta or meta['online'] != True

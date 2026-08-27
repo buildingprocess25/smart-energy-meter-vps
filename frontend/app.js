@@ -2168,20 +2168,18 @@ async function _chartInit(deviceId) {
             _appendChartPoint(point);
         });
 
-        // ── Phase 2: tambahkan titik live-buffer (5-detik) ──
-        const interval = typeof CHART_INTERVAL_MS !== 'undefined' ? CHART_INTERVAL_MS : 5000;
-        const liveWindowStart = Math.max(
-            liveStart,
-            cachedLastTs > 0 ? cachedLastTs + interval : 0
-        );
-        let kIdx = 0;
-        for (let ts = liveWindowStart; ts <= now; ts += interval) {
-            const point = { ts };
-            while (kIdx < liveKeys.length - 1 && +liveKeys[kIdx + 1] <= ts) kIdx++;
-            const curK = liveKeys[kIdx];
-            const rawAtCur = (curK && +curK <= ts) ? liveData[curK] : null;
-            phases.forEach(ph => { point[ph] = rawAtCur?.[ph] || _chartZeroPoint(); });
-            _appendChartPoint(point);
+        // ── Phase 2: tambahkan titik live-buffer asli dari RAM server ──
+        if (liveKeys.length > 0) {
+            liveKeys.forEach(k => {
+                const ts = +k;
+                if (ts <= cachedLastTs) return;
+                const d = liveData[k];
+                if (d && !d.offline) {
+                    const point = { ts };
+                    phases.forEach(ph => { point[ph] = d?.[ph] || _chartZeroPoint(); });
+                    _appendChartPoint(point);
+                }
+            });
         }
     } catch (e) {
         console.error("Error in _chartInit:", e);
