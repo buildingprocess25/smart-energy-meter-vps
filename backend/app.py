@@ -164,18 +164,22 @@ def init_db():
         if db_pool:  # Sudah diinisialisasi oleh thread lain
             return
         db_url = os.environ.get('DATABASE_URL')
+        if not db_url or not (db_url.startswith("postgres://") or db_url.startswith("postgresql://")):
+            print("WARNING: DATABASE_URL not set or invalid. Database operations will fail.")
+            return
         try:
             pool = psycopg2.pool.ThreadedConnectionPool(
                 2, 50, db_url,
                 connect_timeout=8,
                 options='-c statement_timeout=15000'
             )
+            db_pool = pool  # Langsung sediakan pool agar request API tidak terblokir
             print("PostgreSQL connection pool initialized successfully (min=2, max=50, timeout=8s).")
 
             # Inisialisasi DB Sparta juga jika tersedia
             init_sparta_db()
 
-            # Create tables if not exist
+            # Jalankan schema & index check
             conn = pool.getconn()
             try:
                 with conn.cursor() as cur:
@@ -188,7 +192,6 @@ def init_db():
                             sensors JSONB DEFAULT '[]'::jsonb
                         );
                     """)
-                    # Tabel telemetry: snapshot otomatis tiap 15 menit (untuk grafik Day/Week)
                     cur.execute("""
                         CREATE TABLE IF NOT EXISTS telemetry (
                             id SERIAL PRIMARY KEY,
@@ -205,7 +208,6 @@ def init_db():
                             offline BOOLEAN DEFAULT FALSE
                         );
                     """)
-                    # Tabel history: rekaman sesi Start Capture (untuk tab Database)
                     cur.execute("""
                         CREATE TABLE IF NOT EXISTS history (
                             id SERIAL PRIMARY KEY,
@@ -225,38 +227,27 @@ def init_db():
                             phase_name VARCHAR(100) DEFAULT NULL
                         );
                     """)
-                    cur.execute("SELECT column_name FROM information_schema.columns WHERE table_name='history' AND column_name='phase_name';")
-                    if not cur.fetchone():
-                        cur.execute("ALTER TABLE history ADD COLUMN phase_name VARCHAR(100) DEFAULT NULL;")
-                    cur.execute("SELECT column_name FROM information_schema.columns WHERE table_name='history' AND column_name='device_name';")
-                    if not cur.fetchone():
-                        cur.execute("ALTER TABLE history ADD COLUMN device_name VARCHAR(100) DEFAULT NULL;")
-                    cur.execute("SELECT column_name FROM information_schema.columns WHERE table_name='devices' AND column_name='store_id';")
-                    if not cur.fetchone():
-                        cur.execute("ALTER TABLE devices ADD COLUMN store_id VARCHAR(50) DEFAULT NULL;")
-                    cur.execute("SELECT column_name FROM information_schema.columns WHERE table_name='history' AND column_name='store_id';")
-                    if not cur.fetchone():
-                        cur.execute("ALTER TABLE history ADD COLUMN store_id VARCHAR(50) DEFAULT NULL;")
-                    cur.execute("SELECT column_name FROM information_schema.columns WHERE table_name='devices' AND column_name='latitude';")
-                    if not cur.fetchone():
-                        cur.execute("ALTER TABLE devices ADD COLUMN latitude FLOAT DEFAULT NULL;")
-                    cur.execute("SELECT column_name FROM information_schema.columns WHERE table_name='devices' AND column_name='longitude';")
-                    if not cur.fetchone():
-                        cur.execute("ALTER TABLE devices ADD COLUMN longitude FLOAT DEFAULT NULL;")
-                    cur.execute("SELECT column_name FROM information_schema.columns WHERE table_name='history' AND column_name='latitude';")
-                    if not cur.fetchone():
-                        cur.execute("ALTER TABLE history ADD COLUMN latitude FLOAT DEFAULT NULL;")
-                    cur.execute("SELECT column_name FROM information_schema.columns WHERE table_name='history' AND column_name='longitude';")
-                    if not cur.fetchone():
-                        cur.execute("ALTER TABLE history ADD COLUMN longitude FLOAT DEFAULT NULL;")
-                    # Pastikan kolom name & device_name bertipe TEXT tanpa batasan panjang karakter
-                    cur.execute("ALTER TABLE devices ALTER COLUMN name TYPE TEXT;")
-                    cur.execute("ALTER TABLE history ALTER COLUMN device_name TYPE TEXT;")
-                    cur.execute("ALTER TABLE history ALTER COLUMN session_name TYPE TEXT;")
+                    # Alter table add column if not exists
+                    columns_to_add = [
+                        ('history', 'phase_name', 'VARCHAR(100) DEFAULT NULL'),
+                        ('history', 'device_name', 'TEXT DEFAULT NULL'),
+                        ('history', 'store_id', 'VARCHAR(50) DEFAULT NULL'),
+                        ('history', 'latitude', 'FLOAT DEFAULT NULL'),
+                        ('history', 'longitude', 'FLOAT DEFAULT NULL'),
+                        ('devices', 'store_id', 'VARCHAR(50) DEFAULT NULL'),
+                        ('devices', 'latitude', 'FLOAT DEFAULT NULL'),
+                        ('devices', 'longitude', 'FLOAT DEFAULT NULL'),
+                    ]
+                    for tbl, col, col_def in columns_to_add:
+                        cur.execute(f"ALTER TABLE {tbl} ADD COLUMN IF NOT EXISTS {col} {col_def};")
+
                     def create_index_safe(idx_name, create_sql):
-                        cur.execute("SELECT 1 FROM pg_indexes WHERE indexname = %s", (idx_name,))
-                        if not cur.fetchone():
-                            cur.execute(create_sql)
+                        try:
+                            cur.execute("SELECT 1 FROM pg_indexes WHERE indexname = %s", (idx_name,))
+                            if not cur.fetchone():
+                                cur.execute(create_sql)
+                        except Exception as ie:
+                            print(f"[init_db] Warning creating index {idx_name}: {ie}")
 
                     create_index_safe('idx_telemetry_device_epoch', "CREATE INDEX idx_telemetry_device_epoch ON telemetry(device_id, epoch);")
                     create_index_safe('idx_telemetry_device_phase', "CREATE INDEX idx_telemetry_device_phase ON telemetry(device_id, phase);")
@@ -265,41 +256,13 @@ def init_db():
                     create_index_safe('idx_history_session_epoch', "CREATE INDEX idx_history_session_epoch ON history(session_id, epoch);")
                     create_index_safe('idx_history_dev_sess_epoch', "CREATE INDEX idx_history_dev_sess_epoch ON history(device_id, session_id, epoch);")
 
-                    # Fix broken sequences from database migration
-                    for table_name in ['telemetry', 'history']:
-                        cur.execute(f"SELECT column_default FROM information_schema.columns WHERE table_name='{table_name}' AND column_name='id';")
-                        res = cur.fetchone()
-                        if res and res[0] is None:
-                            seq_name = f"{table_name}_id_seq_fallback"
-                            cur.execute("SELECT 1 FROM pg_class WHERE relname=%s", (seq_name,))
-                            if not cur.fetchone():
-                                cur.execute(f"CREATE SEQUENCE {seq_name};")
-                                cur.execute(f"SELECT MAX(id) FROM {table_name};")
-                                max_id = cur.fetchone()[0]
-                                if max_id:
-                                    cur.execute(f"SELECT setval('{seq_name}', {max_id});")
-                            cur.execute(f"ALTER TABLE {table_name} ALTER COLUMN id SET DEFAULT nextval('{seq_name}');")
-
-                    # Unique constraint untuk cegah duplikat snapshot telemetry
-                    # (terjadi saat Flask debug mode menjalankan 2 proses sekaligus)
-                    cur.execute("""
-                        DELETE FROM telemetry a
-                        USING telemetry b
-                        WHERE a.id > b.id
-                          AND a.device_id = b.device_id
-                          AND a.phase = b.phase
-                          AND a.timestamp = b.timestamp
-                    """)
-                    create_index_safe('idx_telemetry_unique_slot', "CREATE UNIQUE INDEX idx_telemetry_unique_slot ON telemetry(device_id, phase, timestamp);")
                     conn.commit()
-                    print("Database tables initialized successfully.")
+                    print("Database tables & indexes initialized successfully.")
             except Exception as e:
                 conn.rollback()
                 print(f"Error initializing database tables: {e}")
             finally:
                 pool.putconn(conn)
-
-            db_pool = pool  # Simpan ke global hanya setelah semuanya sukses
         except Exception as e:
             print(f"Failed to initialize PostgreSQL pool: {e}")
 

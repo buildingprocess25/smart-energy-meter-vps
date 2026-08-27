@@ -22,7 +22,7 @@ EXPOSE 5000
 # Jalankan dengan 1 worker agar _mqtt_live_data tidak terpecah antar proses
 CMD ["gunicorn", \
      "--workers", "1", \
-     "--threads", "4", \
+     "--threads", "12", \
      "--timeout", "120", \
      "--worker-class", "gthread", \
      "--bind", "0.0.0.0:5000", \
