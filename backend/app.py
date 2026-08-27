@@ -1589,8 +1589,9 @@ def get_sessions(device_id: str = 'all'):
 def get_session_history_phase(device_id: str, session_id: str, phase: str):
     try:
         phase = phase.upper()
+        is_all = not device_id or device_id.lower() == 'all'
         with get_db_cursor() as cur:
-            if not device_id or device_id.lower() == 'all':
+            if is_all:
                 cur.execute("""
                     SELECT timestamp, epoch, voltage, current, power, frequency, energy, power_factor, offline, device_id
                     FROM history
@@ -1608,8 +1609,10 @@ def get_session_history_phase(device_id: str, session_id: str, phase: str):
             
         import math
         history = {}
+        resolved_device_id = device_id
         for row in rows:
-            ts, epoch_val, v, c, w, hz, kwh, pf, offline = row
+            ts, epoch_val, v, c, w, hz, kwh, pf, offline, row_did = row
+            resolved_device_id = row_did or resolved_device_id
             key = f'capture_{epoch_val}'
             
             apparent = (v * c) / 1000.0
@@ -1640,18 +1643,18 @@ def get_session_history_phase(device_id: str, session_id: str, phase: str):
         if history:
             with get_db_cursor() as cur:
                 cur.execute("""
-                    SELECT session_name, MIN(timestamp), MAX(timestamp), COUNT(*)
+                    SELECT session_name, MIN(timestamp), MAX(timestamp), COUNT(*), MAX(device_id)
                     FROM history
-                    WHERE device_id = %s AND session_id = %s
+                    WHERE session_id = %s
                     GROUP BY session_name
-                """, (device_id, session_id))
+                """, (session_id,))
                 m_row = cur.fetchone()
             if m_row:
-                sname, start, end, count = m_row
+                sname, start, end, count, meta_did = m_row
                 history['_meta'] = {
                     'id': session_id,
                     'name': sname,
-                    'deviceId': device_id,
+                    'deviceId': meta_did or resolved_device_id,
                     'startTime': start,
                     'endTime': end,
                     'recordCount': count
