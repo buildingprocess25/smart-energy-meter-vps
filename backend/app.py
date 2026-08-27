@@ -164,11 +164,13 @@ def init_db():
         if db_pool:  # Sudah diinisialisasi oleh thread lain
             return
         db_url = os.environ.get('DATABASE_URL')
-        if not db_url or not (db_url.startswith("postgres://") or db_url.startswith("postgresql://")):
-            print("WARNING: DATABASE_URL not set or invalid. Database operations will fail.")
         try:
-            pool = psycopg2.pool.ThreadedConnectionPool(2, 50, db_url)
-            print("PostgreSQL connection pool initialized successfully (min=2, max=50).")
+            pool = psycopg2.pool.ThreadedConnectionPool(
+                2, 50, db_url,
+                connect_timeout=8,
+                options='-c statement_timeout=15000'
+            )
+            print("PostgreSQL connection pool initialized successfully (min=2, max=50, timeout=8s).")
 
             # Inisialisasi DB Sparta juga jika tersedia
             init_sparta_db()
@@ -1359,29 +1361,34 @@ def capture_start():
         hints = sorted([p for p in (body.get('phases') or []) if _PHASE_RE.match(p)], key=lambda x: int(x[1:]))
         if not did: return jsonify({'ok': False, 'error': 'deviceId harus diisi'}), 400
         if not hints: return jsonify({'ok': False, 'error': 'Minimal 1 sensor harus diaktifkan'}), 400
+
+        # Baca metadata sensor & toko dari DB DI LUAR LOCK (agar lock tidak menahan koneksi)
+        sensor_names = {}
+        store_id = None
+        try:
+            with get_db_cursor() as cur:
+                cur.execute("SELECT sensors, store_id FROM devices WHERE id = %s", (did,))
+                row = cur.fetchone()
+                if row:
+                    if row[0]:
+                        sensors_list = row[0] if isinstance(row[0], list) else json.loads(row[0])
+                        for s in sensors_list:
+                            ph = s.get('phase')
+                            nm = s.get('name')
+                            if ph and nm:
+                                sensor_names[ph] = nm
+                    store_id = row[1]
+        except Exception as dbe:
+            print(f"[capture_start] DB lookup warning: {dbe}")
+
+        sid    = f'session_{int(time.time() * 1000)}'
+        now_s  = _ts_now()
+
+        # Update in-memory state dengan lock secepat kilat (sub-milidetik)
         with _capture_lock:
             cstate = _get_device_capture_state(did)
             if cstate.get('active') or cstate.get('_finalizing'):
                 return jsonify({'ok': False, 'error': f'Capture untuk perangkat {did} sudah berjalan'}), 409
-            sid    = f'session_{int(time.time() * 1000)}'
-            now_s  = _ts_now()
-            sensor_names = {}
-            store_id = None
-            try:
-                with get_db_cursor() as cur:
-                    cur.execute("SELECT sensors, store_id FROM devices WHERE id = %s", (did,))
-                    row = cur.fetchone()
-                    if row:
-                        if row[0]:
-                            sensors_list = row[0] if isinstance(row[0], list) else json.loads(row[0])
-                            for s in sensors_list:
-                                ph = s.get('phase')
-                                nm = s.get('name')
-                                if ph and nm:
-                                    sensor_names[ph] = nm
-                        store_id = row[1]
-            except Exception as dbe:
-                print(f"[capture_start] DB lookup warning: {dbe}")
 
             cstate.update({
                 'active': True, 'device_id': did, 'device_name': dname or did,
@@ -1389,13 +1396,16 @@ def capture_start():
                 'count': 0, 'started_at': now_s, 'enabled_phases': hints, 'time_offset_ms': 0,
                 'sensor_names': sensor_names, 'store_id': store_id,
             })
-            if _mqtt_client:
-                try:
-                    _mqtt_client.publish(f"energymeter/{did}/cmd/resetEnergy", "1")
-                except Exception:
-                    pass
             _start_thread(did)
-            _save_capture_states()
+
+        # MQTT publish & save state file dijalankan DI LUAR LOCK
+        if _mqtt_client:
+            try:
+                _mqtt_client.publish(f"energymeter/{did}/cmd/resetEnergy", "1")
+            except Exception:
+                pass
+        _save_capture_states()
+
         return jsonify({'ok': True, 'session_id': sid, 'session_name': sname, 'device_id': did})
     except Exception as e:
         print(f"Error in capture_start: {e}")
