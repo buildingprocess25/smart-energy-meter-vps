@@ -166,10 +166,9 @@ def init_db():
         db_url = os.environ.get('DATABASE_URL')
         if not db_url or not (db_url.startswith("postgres://") or db_url.startswith("postgresql://")):
             print("WARNING: DATABASE_URL not set or invalid. Database operations will fail.")
-            return
         try:
-            pool = psycopg2.pool.ThreadedConnectionPool(1, 20, db_url)
-            print("PostgreSQL connection pool initialized successfully.")
+            pool = psycopg2.pool.ThreadedConnectionPool(2, 50, db_url)
+            print("PostgreSQL connection pool initialized successfully (min=2, max=50).")
 
             # Inisialisasi DB Sparta juga jika tersedia
             init_sparta_db()
@@ -811,7 +810,7 @@ def _capture_worker(device_id: str, stop: threading.Event, wake: threading.Event
             iv  = float(cstate['interval']); ep = cstate.get('enabled_phases')
             to_ms = cstate.get('time_offset_ms', 0)
         sched = nxt; nxt += iv
-        threading.Thread(target=_do_capture_io, args=(did, sid, sched, iv, last_hash, last_change, ep, to_ms), daemon=True).start()
+        _do_capture_io(did, sid, sched, iv, last_hash, last_change, ep, to_ms)
 
 def _start_thread(device_id: str) -> None:
     with _capture_lock:
@@ -873,6 +872,25 @@ def index():
 
 @app.route('/health', methods=['GET'])
 def health(): return jsonify({"status": "ok", "message": "Service is alive"}), 200
+
+@app.errorhandler(500)
+def internal_error(error):
+    if request.path.startswith('/api/'):
+        return jsonify({'ok': False, 'error': 'Internal Server Error', 'detail': str(error)}), 500
+    return render_template('index.html', v=_APP_VERSION), 500
+
+@app.errorhandler(404)
+def not_found_error(error):
+    if request.path.startswith('/api/'):
+        return jsonify({'ok': False, 'error': f'Endpoint not found: {request.path}'}), 404
+    return render_template('index.html', v=_APP_VERSION), 200
+
+@app.errorhandler(Exception)
+def handle_exception(e):
+    if request.path.startswith('/api/'):
+        print(f"[API Error] {request.path}: {e}")
+        return jsonify({'ok': False, 'error': str(e)}), 500
+    return render_template('index.html', v=_APP_VERSION), 500
 
 @app.route('/api/config')
 def get_config(): return jsonify({})
@@ -1332,68 +1350,76 @@ def capture_status():
 
 @app.route('/api/capture/start', methods=['POST'])
 def capture_start():
-    body  = request.get_json(silent=True) or {}
-    did   = (body.get('deviceId')    or '').strip()
-    dname = (body.get('deviceName')  or '').strip()
-    sname = (body.get('sessionName') or '').strip() or f'Rekaman {_ts_now()}'
-    iv    = max(15, int(body.get('interval', 15)))
-    hints = sorted([p for p in (body.get('phases') or []) if _PHASE_RE.match(p)], key=lambda x: int(x[1:]))
-    if not did: return jsonify({'ok': False, 'error': 'deviceId harus diisi'}), 400
-    if not hints: return jsonify({'ok': False, 'error': 'Minimal 1 sensor harus diaktifkan'}), 400
-    with _capture_lock:
-        cstate = _get_device_capture_state(did)
-        if cstate.get('active') or cstate.get('_finalizing'):
-            return jsonify({'ok': False, 'error': f'Capture untuk perangkat {did} sudah berjalan'}), 409
-        sid    = f'session_{int(time.time() * 1000)}'
-        now_s  = _ts_now()
-        sensor_names = {}
-        store_id = None
-        try:
-            with get_db_cursor() as cur:
-                cur.execute("SELECT sensors, store_id FROM devices WHERE id = %s", (did,))
-                row = cur.fetchone()
-                if row:
-                    if row[0]:
-                        sensors_list = row[0] if isinstance(row[0], list) else json.loads(row[0])
-                        for s in sensors_list:
-                            ph = s.get('phase')
-                            nm = s.get('name')
-                            if ph and nm:
-                                sensor_names[ph] = nm
-                    store_id = row[1]
-        except Exception:
-            pass
-
-        cstate.update({
-            'active': True, 'device_id': did, 'device_name': dname or did,
-            'session_id': sid, 'session_name': sname, 'interval': iv,
-            'count': 0, 'started_at': now_s, 'enabled_phases': hints, 'time_offset_ms': 0,
-            'sensor_names': sensor_names, 'store_id': store_id,
-        })
-        if _mqtt_client:
+    try:
+        body  = request.get_json(silent=True) or {}
+        did   = (body.get('deviceId')    or '').strip()
+        dname = (body.get('deviceName')  or '').strip()
+        sname = (body.get('sessionName') or '').strip() or f'Rekaman {_ts_now()}'
+        iv    = max(1, int(body.get('interval', 15)))
+        hints = sorted([p for p in (body.get('phases') or []) if _PHASE_RE.match(p)], key=lambda x: int(x[1:]))
+        if not did: return jsonify({'ok': False, 'error': 'deviceId harus diisi'}), 400
+        if not hints: return jsonify({'ok': False, 'error': 'Minimal 1 sensor harus diaktifkan'}), 400
+        with _capture_lock:
+            cstate = _get_device_capture_state(did)
+            if cstate.get('active') or cstate.get('_finalizing'):
+                return jsonify({'ok': False, 'error': f'Capture untuk perangkat {did} sudah berjalan'}), 409
+            sid    = f'session_{int(time.time() * 1000)}'
+            now_s  = _ts_now()
+            sensor_names = {}
+            store_id = None
             try:
-                _mqtt_client.publish(f"energymeter/{did}/cmd/resetEnergy", "1")
-            except Exception:
-                pass
-        _start_thread(did)
-        _save_capture_states()
-    return jsonify({'ok': True, 'session_id': sid, 'session_name': sname, 'device_id': did})
+                with get_db_cursor() as cur:
+                    cur.execute("SELECT sensors, store_id FROM devices WHERE id = %s", (did,))
+                    row = cur.fetchone()
+                    if row:
+                        if row[0]:
+                            sensors_list = row[0] if isinstance(row[0], list) else json.loads(row[0])
+                            for s in sensors_list:
+                                ph = s.get('phase')
+                                nm = s.get('name')
+                                if ph and nm:
+                                    sensor_names[ph] = nm
+                        store_id = row[1]
+            except Exception as dbe:
+                print(f"[capture_start] DB lookup warning: {dbe}")
+
+            cstate.update({
+                'active': True, 'device_id': did, 'device_name': dname or did,
+                'session_id': sid, 'session_name': sname, 'interval': iv,
+                'count': 0, 'started_at': now_s, 'enabled_phases': hints, 'time_offset_ms': 0,
+                'sensor_names': sensor_names, 'store_id': store_id,
+            })
+            if _mqtt_client:
+                try:
+                    _mqtt_client.publish(f"energymeter/{did}/cmd/resetEnergy", "1")
+                except Exception:
+                    pass
+            _start_thread(did)
+            _save_capture_states()
+        return jsonify({'ok': True, 'session_id': sid, 'session_name': sname, 'device_id': did})
+    except Exception as e:
+        print(f"Error in capture_start: {e}")
+        return jsonify({'ok': False, 'error': str(e)}), 500
 
 @app.route('/api/capture/stop', methods=['POST'])
 def capture_stop():
-    body = request.get_json(silent=True) or {}
-    did  = (body.get('deviceId') or '').strip()
-    if not did:
-        with _capture_lock:
-            active_dids = [d for d, s in _capture_states.items() if s.get('active')]
-            did = active_dids[0] if active_dids else None
-    if not did:
-        return jsonify({'ok': False, 'error': 'Tidak ada capture aktif'}), 400
-    
-    stopped = _stop_device_capture(did)
-    if not stopped:
-        return jsonify({'ok': False, 'error': f'Tidak ada capture aktif untuk perangkat {did}'}), 400
-    return jsonify({'ok': True, 'device_id': did})
+    try:
+        body = request.get_json(silent=True) or {}
+        did  = (body.get('deviceId') or '').strip()
+        if not did:
+            with _capture_lock:
+                active_dids = [d for d, s in _capture_states.items() if s.get('active')]
+                did = active_dids[0] if active_dids else None
+        if not did:
+            return jsonify({'ok': False, 'error': 'Tidak ada capture aktif'}), 400
+        
+        stopped = _stop_device_capture(did)
+        if not stopped:
+            return jsonify({'ok': False, 'error': f'Tidak ada capture aktif untuk perangkat {did}'}), 400
+        return jsonify({'ok': True, 'device_id': did})
+    except Exception as e:
+        print(f"Error in capture_stop: {e}")
+        return jsonify({'ok': False, 'error': str(e)}), 500
 
 @app.route('/api/capture/interval', methods=['POST'])
 def capture_interval():

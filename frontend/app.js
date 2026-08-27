@@ -18,6 +18,17 @@ const MAP_METRIC_JS = {
 };
 function showGlobalLoader() { const g = document.getElementById('globalLoader'); if (g) { g.style.display = 'flex'; void g.offsetWidth; g.classList.remove('hidden'); } }
 function hideGlobalLoader() { const g = document.getElementById('globalLoader'); if (g) { g.classList.add('hidden'); setTimeout(() => g.classList.contains('hidden') && (g.style.display = 'none'), 500); } }
+
+async function safeFetchJson(url, options = {}) {
+    const res = await fetch(url, options);
+    const contentType = res.headers.get('content-type') || '';
+    if (!contentType.includes('application/json')) {
+        const text = await res.text();
+        const cleanText = (text || '').replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 120);
+        throw new Error(res.status ? `HTTP ${res.status}: ${cleanText || 'Server Error'}` : 'Respons server bukan format JSON');
+    }
+    return await res.json();
+}
 let realtimeData = null;
 let rawRealtimeData = null;
 let isConnected = false;
@@ -4737,7 +4748,7 @@ async function _refreshActiveSessionRecords() {
 async function syncCaptureStatus() {
     try {
         const devParam = selectedDeviceId ? `?deviceId=${encodeURIComponent(selectedDeviceId)}` : '';
-        const status = await fetch(`/api/capture/status${devParam}`).then(r => r.json());
+        const status = await safeFetchJson(`/api/capture/status${devParam}`);
         
         // Status khusus untuk device yang sedang dipilih di UI
         const currentDevStatus = (status.devices && selectedDeviceId && status.devices[selectedDeviceId])
@@ -4879,10 +4890,9 @@ async function _apiStopCapture() {
     _updateCaptureButtonUI(false);
     buildSessionUI();
     try {
-        const json = await fetch('/api/capture/stop', { method: 'POST' })
-            .then(r => r.json());
+        const json = await safeFetchJson('/api/capture/stop', { method: 'POST' });
         if (!json.ok) {
-            await showModal('Error', 'Gagal menghentikan: ' + json.error, 'error');
+            await showModal('Error', 'Gagal menghentikan: ' + (json.error || 'Server error'), 'error');
         }
         if (selectedDeviceId) {
             await _attachHistoryListener(selectedDeviceId);
@@ -4936,12 +4946,11 @@ async function confirmRenameSession() {
     closeSessionNameModal();
     if (!targetId) return;
     try {
-        const res = await fetch('/api/capture/rename-session', {
+        const json = await safeFetchJson('/api/capture/rename-session', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ sessionId: targetId, name: newName })
         });
-        const json = await res.json();
         if (!json.ok) throw new Error(json.error || 'Server error');
 
         if (sessionsData[targetId]) sessionsData[targetId].name = newName;
@@ -4967,7 +4976,7 @@ async function confirmStartCapture() {
         'success'
     );
     try {
-        const json = await fetch('/api/capture/start', {
+        const json = await safeFetchJson('/api/capture/start', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -4977,7 +4986,7 @@ async function confirmStartCapture() {
                 deviceName: selectedDeviceName,
                 phases: phasesHint,
             }),
-        }).then(r => r.json());
+        });
         if (!json.ok) {
             captureActive = false;
             currentSessionId = null;
