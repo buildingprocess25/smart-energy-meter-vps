@@ -1090,7 +1090,7 @@ def rename_device(device_id: str):
 @app.route('/api/devices/<device_id>', methods=['DELETE'])
 def delete_device_permanently(device_id: str):
     try:
-        # Hapus cache memori backend agar worker tidak mendeteksi dan mendaftarkannya lagi
+        # Hapus cache memori backend agar worker mendeteksi ulang
         _mqtt_live_data.pop(device_id, None)
         _mqtt_last_seen.pop(device_id, None)
         _db_last_ping.pop(device_id, None)
@@ -1100,14 +1100,11 @@ def delete_device_permanently(device_id: str):
         _device_live_buffer.pop(device_id, None)
         
         with get_db_cursor() as cur:
-            # Hapus data histori capture
-            cur.execute("DELETE FROM history WHERE device_id = %s", (device_id,))
-            # Hapus data snapshot telemetry
-            cur.execute("DELETE FROM telemetry WHERE device_id = %s", (device_id,))
-            # Hapus metadata device
+            # Hapus metadata pendaftaran device saja agar bisa di-auto register ulang bersih
+            # Catatan: Data tabel 'history' dan 'telemetry' TETAP DISIMPAN AMAN di database
             cur.execute("DELETE FROM devices WHERE id = %s", (device_id,))
             
-        print(f"[API] Device {device_id} deleted permanently.")
+        print(f"[API] Device {device_id} unregistered from devices table. History and telemetry preserved.")
         return jsonify({'ok': True, 'device_id': device_id})
     except Exception as e:
         print(f"Error in delete_device_permanently: {e}")
@@ -1453,33 +1450,51 @@ def capture_shift_time():
     except Exception as e:
         return jsonify({'ok': False, 'error': str(e)}), 500
 
+@app.route('/api/sessions')
 @app.route('/api/devices/<device_id>/sessions')
-def get_sessions(device_id: str):
+def get_sessions(device_id: str = 'all'):
     try:
+        is_all = not device_id or device_id.lower() == 'all'
         with get_db_cursor() as cur:
-            cur.execute("""
-                SELECT session_id, session_name,
-                       (SELECT timestamp FROM history h2 WHERE h2.session_id = h.session_id ORDER BY h2.epoch ASC LIMIT 1) as start_time,
-                       (SELECT timestamp FROM history h3 WHERE h3.session_id = h.session_id ORDER BY h3.epoch DESC LIMIT 1) as end_time,
-                       COUNT(*) as record_count,
-                       MIN(epoch) as start_epoch,
-                       ARRAY_AGG(DISTINCT phase ORDER BY phase) as phases,
-                       MAX(device_name) as snapshot_device_name
-                FROM history h
-                WHERE device_id = %s
-                GROUP BY session_id, session_name
-                ORDER BY start_epoch DESC
-            """, (device_id,))
+            if is_all:
+                cur.execute("""
+                    SELECT session_id, session_name,
+                           (SELECT timestamp FROM history h2 WHERE h2.session_id = h.session_id ORDER BY h2.epoch ASC LIMIT 1) as start_time,
+                           (SELECT timestamp FROM history h3 WHERE h3.session_id = h.session_id ORDER BY h3.epoch DESC LIMIT 1) as end_time,
+                           COUNT(*) as record_count,
+                           MIN(epoch) as start_epoch,
+                           ARRAY_AGG(DISTINCT phase ORDER BY phase) as phases,
+                           MAX(device_name) as snapshot_device_name,
+                           h.device_id
+                    FROM history h
+                    GROUP BY session_id, session_name, h.device_id
+                    ORDER BY start_epoch DESC
+                """)
+            else:
+                cur.execute("""
+                    SELECT session_id, session_name,
+                           (SELECT timestamp FROM history h2 WHERE h2.session_id = h.session_id ORDER BY h2.epoch ASC LIMIT 1) as start_time,
+                           (SELECT timestamp FROM history h3 WHERE h3.session_id = h.session_id ORDER BY h3.epoch DESC LIMIT 1) as end_time,
+                           COUNT(*) as record_count,
+                           MIN(epoch) as start_epoch,
+                           ARRAY_AGG(DISTINCT phase ORDER BY phase) as phases,
+                           MAX(device_name) as snapshot_device_name,
+                           h.device_id
+                    FROM history h
+                    WHERE device_id = %s
+                    GROUP BY session_id, session_name, h.device_id
+                    ORDER BY start_epoch DESC
+                """, (device_id,))
             rows = cur.fetchall()
 
-        # Ambil nama device dari database sebagai fallback data lama
-        current_device_name = device_id
+        # Ambil nama device dari database sebagai fallback
+        device_names_map = {}
         try:
             with get_db_cursor() as cur:
-                cur.execute("SELECT name FROM devices WHERE id = %s", (device_id,))
-                dev_row = cur.fetchone()
-                if dev_row and dev_row[0]:
-                    current_device_name = dev_row[0]
+                cur.execute("SELECT id, name FROM devices")
+                for d_id, d_name in cur.fetchall():
+                    if d_name:
+                        device_names_map[d_id] = d_name
         except Exception:
             pass
 
@@ -1487,12 +1502,19 @@ def get_sessions(device_id: str):
         session_phase_names = {}
         try:
             with get_db_cursor() as cur:
-                cur.execute("""
-                    SELECT session_id, phase, MAX(phase_name)
-                    FROM history
-                    WHERE device_id = %s
-                    GROUP BY session_id, phase
-                """, (device_id,))
+                if is_all:
+                    cur.execute("""
+                        SELECT session_id, phase, MAX(phase_name)
+                        FROM history
+                        GROUP BY session_id, phase
+                    """)
+                else:
+                    cur.execute("""
+                        SELECT session_id, phase, MAX(phase_name)
+                        FROM history
+                        WHERE device_id = %s
+                        GROUP BY session_id, phase
+                    """, (device_id,))
                 hist_phases = cur.fetchall()
             for sid, ph, ph_name in hist_phases:
                 if sid not in session_phase_names:
@@ -1503,9 +1525,9 @@ def get_sessions(device_id: str):
 
         sessions = []
         for row in rows:
-            sid, sname, start_time, end_time, count, start_epoch, phases_arr, snapshot_dname = row
-            # phases_arr adalah list dari PostgreSQL ARRAY_AGG, misal ['L1','L2','L3']
+            sid, sname, start_time, end_time, count, start_epoch, phases_arr, snapshot_dname, row_did = row
             phases_list = sorted(phases_arr or [], key=lambda x: int(x[1:]) if x[1:].isdigit() else 0)
+            cur_dname = device_names_map.get(row_did, row_did)
             sessions.append({
                 'id': sid,
                 'name': sname,
@@ -1513,40 +1535,41 @@ def get_sessions(device_id: str):
                 'endTime': end_time,
                 'recordCount': count,
                 'startTimestamp': start_epoch,
-                'deviceId': device_id,
-                'deviceName': snapshot_dname or current_device_name,
-                'phases': phases_list,           # ['L1', 'L2', 'L3']
+                'deviceId': row_did,
+                'deviceName': snapshot_dname or cur_dname,
+                'phases': phases_list,
                 'phaseNames': session_phase_names.get(sid, {ph: ph for ph in phases_list}),
             })
 
-        # Gabungkan active session dari memory jika sedang berjalan untuk device ini
-        # Ini mencegah tabel & badge memantul/hilang antara 0 sesi dan 1 sesi sebelum/saat data ditulis
+        # Gabungkan active session dari memory jika sedang berjalan
         with _capture_lock:
-            cstate = _capture_states.get(device_id, {})
-            if cstate.get('active'):
-                active_sid = cstate.get('session_id')
-                active_sname = cstate.get('session_name')
-                active_start = cstate.get('started_at')
-                active_count = cstate.get('count', 0)
-                active_phases = cstate.get('enabled_phases', [])
-                active_names = cstate.get('sensor_names', {})
+            for active_did, cstate in _capture_states.items():
+                if is_all or active_did == device_id:
+                    if cstate.get('active'):
+                        active_sid = cstate.get('session_id')
+                        active_sname = cstate.get('session_name')
+                        active_start = cstate.get('started_at')
+                        active_count = cstate.get('count', 0)
+                        active_phases = cstate.get('enabled_phases', [])
+                        active_names = cstate.get('sensor_names', {})
+                        cur_dname = device_names_map.get(active_did, active_did)
 
-                existing = next((s for s in sessions if s['id'] == active_sid), None)
-                if existing:
-                    existing['recordCount'] = max(existing['recordCount'], active_count)
-                else:
-                    sessions.insert(0, {
-                        'id': active_sid,
-                        'name': active_sname,
-                        'startTime': active_start,
-                        'endTime': None,
-                        'recordCount': active_count,
-                        'startTimestamp': int(time.time() * 1000),
-                        'deviceId': device_id,
-                        'deviceName': cstate.get('device_name') or current_device_name,
-                        'phases': active_phases,
-                        'phaseNames': active_names or {ph: ph for ph in active_phases},
-                    })
+                        existing = next((s for s in sessions if s['id'] == active_sid), None)
+                        if existing:
+                            existing['recordCount'] = max(existing['recordCount'], active_count)
+                        else:
+                            sessions.insert(0, {
+                                'id': active_sid,
+                                'name': active_sname,
+                                'startTime': active_start,
+                                'endTime': None,
+                                'recordCount': active_count,
+                                'startTimestamp': int(time.time() * 1000),
+                                'deviceId': active_did,
+                                'deviceName': cstate.get('device_name') or cur_dname,
+                                'phases': active_phases,
+                                'phaseNames': active_names or {ph: ph for ph in active_phases},
+                            })
 
         return jsonify(sessions)
     except Exception as e:
@@ -1559,12 +1582,20 @@ def get_session_history_phase(device_id: str, session_id: str, phase: str):
     try:
         phase = phase.upper()
         with get_db_cursor() as cur:
-            cur.execute("""
-                SELECT timestamp, epoch, voltage, current, power, frequency, energy, power_factor, offline
-                FROM history
-                WHERE device_id = %s AND session_id = %s AND phase = %s
-                ORDER BY epoch ASC
-            """, (device_id, session_id, phase))
+            if not device_id or device_id.lower() == 'all':
+                cur.execute("""
+                    SELECT timestamp, epoch, voltage, current, power, frequency, energy, power_factor, offline, device_id
+                    FROM history
+                    WHERE session_id = %s AND phase = %s
+                    ORDER BY epoch ASC
+                """, (session_id, phase))
+            else:
+                cur.execute("""
+                    SELECT timestamp, epoch, voltage, current, power, frequency, energy, power_factor, offline, device_id
+                    FROM history
+                    WHERE device_id = %s AND session_id = %s AND phase = %s
+                    ORDER BY epoch ASC
+                """, (device_id, session_id, phase))
             rows = cur.fetchall()
             
         import math

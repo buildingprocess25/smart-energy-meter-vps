@@ -275,13 +275,18 @@
                         <p id="historyCount">Loading…</p>
                     </div>
                     <div class="db-toolbar">
+                        <div class="db-filter-wrap">
+                            <select id="dbDeviceFilter" class="db-device-select" onchange="onDbDeviceFilterChange(this.value)" aria-label="Filter Perangkat">
+                                <option value="all">Semua Perangkat (All)</option>
+                            </select>
+                        </div>
                         <div class="db-search-wrap">
                             <svg class="db-search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                                 stroke-width="2">
                                 <circle cx="11" cy="11" r="8"></circle>
                                 <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
                             </svg>
-                            <input type="text" id="dbSearchInput" class="db-search-input" placeholder="Cari nama sesi…"
+                            <input type="text" id="dbSearchInput" class="db-search-input" placeholder="Cari nama sesi atau toko…"
                                 autocomplete="off" oninput="onDbSearchInput(this.value)">
                             <button class="db-search-clear" id="dbSearchClear" onclick="clearDbSearch()"
                                 title="Hapus pencarian">

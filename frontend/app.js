@@ -2994,7 +2994,12 @@ async function saveDeviceName(deviceId) {
     }
 }
 async function deleteDevice(deviceId, deviceName) {
-    const confirmed = await showModal('Hapus Device Permanen?', `Apakah Anda yakin ingin menghapus device:\n"${deviceName}"?\n\nSeluruh data histori dan konfigurasi sensor terkait akan dihapus secara permanen dari server.`, 'warning', ['confirm']);
+    const confirmed = await showModal(
+        'Reset Pendaftaran Device?',
+        `Apakah Anda yakin ingin mereset pendaftaran device:\n"${deviceName}"?\n\nDaftar konfigurasi sensor aktif akan di-reset agar sistem dapat mendeteksi susunan sensor baru secara otomatis saat dicolok kembali.\n\nRiwayat sesi audit di database tetap tersimpan aman.`,
+        'warning',
+        ['confirm']
+    );
     if (!confirmed) return;
     
     showGlobalLoader();
@@ -3007,10 +3012,10 @@ async function deleteDevice(deviceId, deviceName) {
             throw new Error(e.error || `HTTP ${response.status}`);
         }
         const json = await response.json();
-        if (!json.ok) throw new Error(json.error || 'Gagal menghapus device');
+        if (!json.ok) throw new Error(json.error || 'Gagal mereset pendaftaran device');
         
         hideGlobalLoader();
-        await showModal('Berhasil', `Device "${deviceName}" berhasil dihapus.`, 'success');
+        await showModal('Pendaftaran Direset', `Pendaftaran device "${deviceName}" berhasil di-reset. Sensor akan dideteksi ulang saat alat menyala.`, 'success');
         
         _deviceListCache = _deviceListCache.filter(d => d.id !== deviceId);
         
@@ -3575,6 +3580,45 @@ function startConnectionMonitoring() {
     if (connectionCheckInterval) clearInterval(connectionCheckInterval);
     connectionCheckInterval = setInterval(checkDataFreshness, 2000);
 }
+
+let _historyDeviceFilter = 'all';
+function onDbDeviceFilterChange(value) {
+    _historyDeviceFilter = value || 'all';
+    buildSessionUI();
+}
+
+function updateDbDeviceFilterOptions(sessions) {
+    const select = $('dbDeviceFilter');
+    if (!select) return;
+    const currentVal = _historyDeviceFilter;
+    const deviceMap = new Map();
+    (sessions || []).forEach(s => {
+        if (s.deviceId && !s.isOfflineBackup) {
+            const name = s.deviceName || s.deviceId;
+            deviceMap.set(s.deviceId, name);
+        }
+    });
+    // Tambahkan juga dari cache daftar device aktif
+    (_deviceListCache || []).forEach(d => {
+        if (d.id && !deviceMap.has(d.id)) {
+            deviceMap.set(d.id, d.name || d.id);
+        }
+    });
+
+    let html = '<option value="all">Semua Perangkat (All)</option>';
+    deviceMap.forEach((name, id) => {
+        const label = name && name !== id ? `${id} (${name})` : id;
+        html += `<option value="${_escapeAttr(id)}">${label}</option>`;
+    });
+    select.innerHTML = html;
+    if (deviceMap.has(currentVal) || currentVal === 'all') {
+        select.value = currentVal;
+    } else {
+        select.value = 'all';
+        _historyDeviceFilter = 'all';
+    }
+}
+
 function onDbSearchInput(value) {
     dbSearchQuery = value.trim().toLowerCase();
     $('dbSearchClear')?.classList.toggle('visible', dbSearchQuery.length > 0);
@@ -3591,7 +3635,8 @@ function clearDbSearch() {
 let historyData = [], recordsBySession = {};
 async function _attachHistoryListener(deviceId, isAutoPoll = false) {
     try {
-        const res = await fetch(`/api/devices/${deviceId}/sessions`);
+        // Muat seluruh sesi dari seluruh perangkat agar tab History menjadi pusat arsip global
+        const res = await fetch(`/api/sessions`);
         const list = await res.json();
 
         let totalCount = 0;
@@ -3608,13 +3653,16 @@ async function _attachHistoryListener(deviceId, isAutoPoll = false) {
             }
         });
 
-        list.forEach(meta => {
-            if (oldSessions[meta.id] && oldSessions[meta.id].computedPhases) {
-                meta.computedPhases = oldSessions[meta.id].computedPhases;
-            }
-            sessionsData[meta.id] = meta;
-            totalCount += meta.recordCount || 0;
-        });
+        if (Array.isArray(list)) {
+            list.forEach(meta => {
+                if (oldSessions[meta.id] && oldSessions[meta.id].computedPhases) {
+                    meta.computedPhases = oldSessions[meta.id].computedPhases;
+                }
+                sessionsData[meta.id] = meta;
+                totalCount += meta.recordCount || 0;
+            });
+            updateDbDeviceFilterOptions(list);
+        }
         historyData = Array(totalCount).fill(1);
         buildSessionUI(isAutoPoll);
     } catch (err) {
@@ -3658,16 +3706,31 @@ function buildSessionUI(isAutoPoll = false) {
     if (isAutoPoll && isAnyDropdownOpen) return;
 
     const allSessions = Object.values(sessionsData).sort((a, b) => (b.startTimestamp || 0) - (a.startTimestamp || 0));
-    const filtered = dbSearchQuery ? allSessions.filter(s => (s.name || s.id || '').toLowerCase().includes(dbSearchQuery)) : allSessions;
+    
+    // Filter berdasarkan Dropdown Perangkat
+    const deviceFiltered = (_historyDeviceFilter && _historyDeviceFilter !== 'all')
+        ? allSessions.filter(s => s.deviceId === _historyDeviceFilter)
+        : allSessions;
+
+    // Filter berdasarkan Pencarian Kata Kunci
+    const filtered = dbSearchQuery
+        ? deviceFiltered.filter(s => (
+            (s.name || '').toLowerCase().includes(dbSearchQuery) ||
+            (s.id || '').toLowerCase().includes(dbSearchQuery) ||
+            (s.deviceName || '').toLowerCase().includes(dbSearchQuery) ||
+            (s.deviceId || '').toLowerCase().includes(dbSearchQuery)
+        ))
+        : deviceFiltered;
+
     if (DOM.historyCount) {
-        DOM.historyCount.textContent = dbSearchQuery
+        DOM.historyCount.textContent = (dbSearchQuery || _historyDeviceFilter !== 'all')
             ? `${filtered.length} dari ${allSessions.length} sesi · ${historyData.length} total record`
             : `${allSessions.length} sesi · ${historyData.length} total record`;
     }
     const tbody = DOM.historyBody;
     if (!tbody) return;
     if (!filtered.length) {
-        tbody.innerHTML = `<tr><td colspan="5" class="loading-cell">${dbSearchQuery ? 'Tidak ada sesi yang cocok.' : 'Belum ada data rekaman'}</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="5" class="loading-cell">${(dbSearchQuery || _historyDeviceFilter !== 'all') ? 'Tidak ada sesi yang cocok dengan filter/pencarian.' : 'Belum ada data rekaman'}</td></tr>`;
         return;
     }
     
@@ -3676,7 +3739,6 @@ function buildSessionUI(isAutoPoll = false) {
 
     // 3. Jika ini auto-poll berkala, dan jumlah baris di DOM SAMA dengan jumlah sesi yang ada:
     //    Cukup perbarui angka recordCount di tempat agar DOM tidak di-wipe & zoom level grafik tidak ter-reset!
-    //    Jika ada sesi baru (jumlah baris beda / 0), maka jalankan render ulang lengkap agar sesi baru langsung muncul!
     if (isAutoPoll && existingRowCount === filtered.length && tbody.children.length > 0) {
         filtered.forEach(session => {
             const row = document.getElementById(`detail_${session.id}`)?.previousElementSibling;
@@ -3731,7 +3793,7 @@ function buildSessionUI(isAutoPoll = false) {
                     </button>
                     ${!session.isOfflineBackup ? `
                     <button class="session-dropdown-item" onclick="backupSessionJSON('${session.id}','${_escapeAttr(session.name)}',event)">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg>
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg>
                         Backup JSON
                     </button>
                     ` : ''}
@@ -3744,6 +3806,10 @@ function buildSessionUI(isAutoPoll = false) {
             </div>`;
         }
 
+        const deviceTag = (session.deviceId || liveDeviceName) 
+            ? `<span style="display:inline-flex;align-items:center;gap:4px;padding:2px 6px;margin-left:6px;border-radius:4px;font-size:10.5px;font-weight:600;background:var(--surface-3);color:var(--text-secondary);border:1px solid var(--border);">${session.deviceId || 'DEV'}${liveDeviceName && liveDeviceName !== session.deviceId ? ` · ${_escapeAttr(liveDeviceName)}` : ''}</span>`
+            : '';
+
         return `
         <tr class="session-row${isActive ? ' session-active' : ''}" onclick="toggleSessionDetail('${session.id}')">
             <td class="session-toggle-cell">
@@ -3752,7 +3818,7 @@ function buildSessionUI(isAutoPoll = false) {
             </td>
             <td class="session-name-cell">
                 <span class="session-name">${_highlight(session.name || 'Tanpa nama')}</span>
-                ${(session.deviceName || liveDeviceName) && (session.deviceName || liveDeviceName) !== session.deviceId ? `<span style="font-size:10.5px;color:var(--text-tertiary);margin-left:6px;font-weight:600">· ${session.deviceName || liveDeviceName}</span>` : ''}
+                ${deviceTag}
                 ${isActive ? '<span class="session-live-badge">&#9679; LIVE</span>' : ''}
                 ${session.isOfflineBackup ? '<span class="session-live-badge" style="background:rgba(147,51,234,0.1);color:#9333ea;border-color:rgba(147,51,234,0.25)">&#9679; OFFLINE VIEW</span>' : ''}
             </td>
