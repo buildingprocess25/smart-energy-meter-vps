@@ -2373,13 +2373,14 @@ function _morphChartStructure(animate = true) {
             if (realtimeChart) realtimeChart.options.animation = false;
         }, 800);
     }
-}
 function switchTab(tabName) {
     document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
     document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
     $(`${tabName}Tab`)?.classList.add('active');
     $(`${tabName}Content`)?.classList.add('active');
-    if (tabName === 'history') loadDevices().then(() => buildSessionUI());
+    if (tabName === 'history') {
+        _attachHistoryListener();
+    }
     if (tabName === 'tools' && typeof activeOfflineChart !== 'undefined' && activeOfflineChart) {
         setTimeout(() => activeOfflineChart.resize(), 50);
     }
