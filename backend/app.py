@@ -382,7 +382,7 @@ def validate_device_name(name: str) -> tuple[bool, str]:
     if '\x00' in name: return False, 'Karakter tidak diizinkan'
     return True, ''
 def validate_phase_key(phase: str) -> bool: return bool(_PHASE_RE.match(phase))
-_capture_lock = threading.Lock()
+_capture_lock = threading.RLock()
 _capture_states: dict[str, dict] = {}  # { device_id: capture_state_dict }
 
 def _get_device_capture_state(device_id: str) -> dict:
@@ -443,7 +443,7 @@ def _load_capture_states():
 
 def _data_hash(raw): return hashlib.md5(json.dumps(raw, sort_keys=True).encode()).hexdigest() if raw else None
 _sessions_cache: dict[str, dict] = {}
-_sessions_cache_lock = threading.Lock()
+_sessions_cache_lock = threading.RLock()
 
 def _invalidate_sessions_cache():
     with _sessions_cache_lock:
