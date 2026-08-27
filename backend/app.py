@@ -262,6 +262,8 @@ def init_db():
                     create_index_safe('idx_telemetry_device_phase', "CREATE INDEX idx_telemetry_device_phase ON telemetry(device_id, phase);")
                     create_index_safe('idx_history_session', "CREATE INDEX idx_history_session ON history(session_id);")
                     create_index_safe('idx_history_device_session', "CREATE INDEX idx_history_device_session ON history(device_id, session_id);")
+                    create_index_safe('idx_history_session_epoch', "CREATE INDEX idx_history_session_epoch ON history(session_id, epoch);")
+                    create_index_safe('idx_history_dev_sess_epoch', "CREATE INDEX idx_history_dev_sess_epoch ON history(device_id, session_id, epoch);")
 
                     # Fix broken sequences from database migration
                     for table_name in ['telemetry', 'history']:
@@ -1494,32 +1496,36 @@ def get_sessions(device_id: str = 'all'):
         with get_db_cursor() as cur:
             if is_all:
                 cur.execute("""
-                    SELECT session_id, session_name,
-                           (SELECT timestamp FROM history h2 WHERE h2.session_id = h.session_id ORDER BY h2.epoch ASC LIMIT 1) as start_time,
-                           (SELECT timestamp FROM history h3 WHERE h3.session_id = h.session_id ORDER BY h3.epoch DESC LIMIT 1) as end_time,
+                    SELECT session_id, 
+                           MAX(session_name) as session_name,
+                           to_char(to_timestamp(MIN(epoch)/1000.0) AT TIME ZONE 'Asia/Jakarta', 'HH24:MI:SS DD/MM/YYYY') as start_time,
+                           to_char(to_timestamp(MAX(epoch)/1000.0) AT TIME ZONE 'Asia/Jakarta', 'HH24:MI:SS DD/MM/YYYY') as end_time,
                            COUNT(*) as record_count,
                            MIN(epoch) as start_epoch,
-                           ARRAY_AGG(DISTINCT phase ORDER BY phase) as phases,
+                           ARRAY_AGG(DISTINCT phase) as phases,
                            MAX(device_name) as snapshot_device_name,
-                           h.device_id
-                    FROM history h
-                    GROUP BY session_id, session_name, h.device_id
+                           MAX(device_id) as device_id
+                    FROM history
+                    GROUP BY session_id
                     ORDER BY start_epoch DESC
+                    LIMIT 200;
                 """)
             else:
                 cur.execute("""
-                    SELECT session_id, session_name,
-                           (SELECT timestamp FROM history h2 WHERE h2.session_id = h.session_id ORDER BY h2.epoch ASC LIMIT 1) as start_time,
-                           (SELECT timestamp FROM history h3 WHERE h3.session_id = h.session_id ORDER BY h3.epoch DESC LIMIT 1) as end_time,
+                    SELECT session_id, 
+                           MAX(session_name) as session_name,
+                           to_char(to_timestamp(MIN(epoch)/1000.0) AT TIME ZONE 'Asia/Jakarta', 'HH24:MI:SS DD/MM/YYYY') as start_time,
+                           to_char(to_timestamp(MAX(epoch)/1000.0) AT TIME ZONE 'Asia/Jakarta', 'HH24:MI:SS DD/MM/YYYY') as end_time,
                            COUNT(*) as record_count,
                            MIN(epoch) as start_epoch,
-                           ARRAY_AGG(DISTINCT phase ORDER BY phase) as phases,
+                           ARRAY_AGG(DISTINCT phase) as phases,
                            MAX(device_name) as snapshot_device_name,
-                           h.device_id
-                    FROM history h
+                           MAX(device_id) as device_id
+                    FROM history
                     WHERE device_id = %s
-                    GROUP BY session_id, session_name, h.device_id
+                    GROUP BY session_id
                     ORDER BY start_epoch DESC
+                    LIMIT 200;
                 """, (device_id,))
             rows = cur.fetchall()
 
@@ -1534,31 +1540,6 @@ def get_sessions(device_id: str = 'all'):
         except Exception:
             pass
 
-        # Ambil nama kustom sensor yang direkam pada history (terisolasi per session)
-        session_phase_names = {}
-        try:
-            with get_db_cursor() as cur:
-                if is_all:
-                    cur.execute("""
-                        SELECT session_id, phase, MAX(phase_name)
-                        FROM history
-                        GROUP BY session_id, phase
-                    """)
-                else:
-                    cur.execute("""
-                        SELECT session_id, phase, MAX(phase_name)
-                        FROM history
-                        WHERE device_id = %s
-                        GROUP BY session_id, phase
-                    """, (device_id,))
-                hist_phases = cur.fetchall()
-            for sid, ph, ph_name in hist_phases:
-                if sid not in session_phase_names:
-                    session_phase_names[sid] = {}
-                session_phase_names[sid][ph] = ph_name or ph
-        except Exception:
-            pass
-
         sessions = []
         for row in rows:
             sid, sname, start_time, end_time, count, start_epoch, phases_arr, snapshot_dname, row_did = row
@@ -1566,15 +1547,15 @@ def get_sessions(device_id: str = 'all'):
             cur_dname = device_names_map.get(row_did, row_did)
             sessions.append({
                 'id': sid,
-                'name': sname,
-                'startTime': start_time,
-                'endTime': end_time,
-                'recordCount': count,
-                'startTimestamp': start_epoch,
+                'name': sname or 'Tanpa nama',
+                'startTime': start_time or '---',
+                'endTime': end_time or '---',
+                'recordCount': count or 0,
+                'startTimestamp': start_epoch or 0,
                 'deviceId': row_did,
                 'deviceName': snapshot_dname or cur_dname,
                 'phases': phases_list,
-                'phaseNames': session_phase_names.get(sid, {ph: ph for ph in phases_list}),
+                'phaseNames': {ph: ph for ph in phases_list},
             })
 
         # Gabungkan active session dari memory jika sedang berjalan

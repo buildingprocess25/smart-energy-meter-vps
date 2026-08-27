@@ -4810,10 +4810,11 @@ async function syncCaptureStatus() {
             if (DOM.intervalDisplay)
                 DOM.intervalDisplay.textContent = `Current: ${serverSec} seconds`;
         }
-        // Refresh dari DB setiap 8 detik (untuk phases & count akurat)
+        // Refresh dari DB setiap 15 detik hanya jika tab History sedang aktif
         const now = Date.now();
         if (captureActive && selectedDeviceId) {
-            if (now - _lastHistoryRefresh > _HISTORY_REFRESH_MS) {
+            const isHistoryTabActive = $('historyContent')?.classList.contains('active');
+            if (isHistoryTabActive && now - _lastHistoryRefresh > 15000) {
                 _lastHistoryRefresh = now;
                 await _attachHistoryListener(selectedDeviceId, true);
             } else {
