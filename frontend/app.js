@@ -4066,9 +4066,10 @@ function _fetchPhaseHistory(sessionId, phase, cb) {
         if (!_activeHistoryCallbacks[key]) _activeHistoryCallbacks[key] = [];
         _activeHistoryCallbacks[key].push(cb);
     }
-    fetch(`/api/devices/${selectedDeviceId}/history/${sessionId}/${phase}`)
-        .then(res => res.json())
+    const targetDev = (sessionsData[sessionId]?.deviceId) || selectedDeviceId || 'MC2';
+    safeFetchJson(`/api/devices/${targetDev}/history/${sessionId}/${phase}`)
         .then(historyMap => {
+            if (!historyMap || typeof historyMap !== 'object') throw new Error("Invalid response");
             if (!recordsBySession[sessionId]) recordsBySession[sessionId] = {};
             const arr = [];
             Object.entries(historyMap).forEach(([k, val]) => {
