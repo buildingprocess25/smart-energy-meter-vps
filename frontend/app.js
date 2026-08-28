@@ -2463,8 +2463,8 @@ async function loadDevices() {
         _deviceListCache = devices;
         const visible = devices;
         
-        _populateDeviceSelect(visible);
         if (!visible.length) {
+            _populateDeviceSelect([]);
             selectedDeviceId = '';
             selectedDeviceName = '';
             renderDeviceList([]);
@@ -2486,10 +2486,20 @@ async function loadDevices() {
             selectedDeviceName = targetDev.name && targetDev.name !== targetDev.id ? `${targetDev.id} ${targetDev.name}` : targetDev.id;
             try { localStorage.setItem('sem_last_device_id', selectedDeviceId); } catch (_) { }
         }
-        const activeDev = visible.find(d => d.id === selectedDeviceId);
-        if (!initialLoad && activeDev) {
+
+        let activeDev = visible.find(d => d.id === selectedDeviceId);
+        if (!activeDev && visible.length > 0) {
+            const fallbackDev = visible.find(d => d.online) || visible[0];
+            selectedDeviceId = fallbackDev.id;
+            selectedDeviceName = fallbackDev.name && fallbackDev.name !== fallbackDev.id ? `${fallbackDev.id} ${fallbackDev.name}` : fallbackDev.id;
+            activeDev = fallbackDev;
+            try { localStorage.setItem('sem_last_device_id', selectedDeviceId); } catch (_) { }
+        } else if (!initialLoad && activeDev) {
             selectedDeviceName = activeDev.name && activeDev.name !== activeDev.id ? `${activeDev.id} ${activeDev.name}` : activeDev.id;
         }
+
+        // Render opsi dropdown device setelah selectedDeviceId pasti terdefinisi
+        _populateDeviceSelect(visible);
 
         if (initialLoad && activeDev) {
             connectionStartTime = Date.now();
@@ -2517,13 +2527,16 @@ async function loadDevices() {
 function _populateDeviceSelect(devices) {
     const selects = [DOM.deviceSelect, DOM.summaryDeviceSelect].filter(Boolean);
     if (!selects.length) return;
-    const currentVal = DOM.deviceSelect?.value || DOM.summaryDeviceSelect?.value || selectedDeviceId;
+    const currentVal = selectedDeviceId || DOM.deviceSelect?.value || DOM.summaryDeviceSelect?.value;
     const html = devices.map(d => {
         const displayName = d.name && d.name !== d.id ? `${d.id} ${d.name}` : d.id;
         const statusText = d.online ? 'Online' : 'Offline';
         return `<option value="${d.id}"${d.id === currentVal ? ' selected' : ''}>${displayName} (${statusText})</option>`;
     }).join('');
-    selects.forEach(sel => sel.innerHTML = html);
+    selects.forEach(sel => {
+        sel.innerHTML = html;
+        if (currentVal) sel.value = currentVal;
+    });
 }
 function renderDeviceList(devices) {
     const container = DOM.deviceList;
