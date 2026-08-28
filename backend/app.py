@@ -45,20 +45,42 @@ def _on_message(client, userdata, msg):
         topic = msg.topic
         payload = msg.payload.decode('utf-8')
         parts = topic.split('/')
-        if len(parts) >= 2 and parts[0] == 'energymeter':
+        if len(parts) >= 2 and parts[0] in ('energymeter', 'AlfaEnergy'):
             device_id = parts[1].strip().rstrip(':').strip()
+            if not device_id or device_id == 'all':
+                return
             _mqtt_last_seen[device_id] = time.time()
             if device_id not in _mqtt_live_data:
                 _mqtt_live_data[device_id] = {}
 
+            # Case 1: Timestamp -> AlfaEnergy/EM-0001/Timestamp atau energymeter/MC3/Timestamp
             if len(parts) == 3 and parts[2] == 'Timestamp':
-                # energymeter/alat1/Timestamp
                 _mqtt_live_data[device_id]['Timestamp'] = payload
 
+            # Case 2: Status -> AlfaEnergy/EM-0001/status/...
+            elif len(parts) >= 4 and parts[2] == 'status':
+                if 'status' not in _mqtt_live_data[device_id]:
+                    _mqtt_live_data[device_id]['status'] = {}
+                _mqtt_live_data[device_id]['status'][parts[3]] = payload
+
+            # Case 3: AlfaEnergy Mode 3P / 1P -> AlfaEnergy/EM-0001/3P/R, AlfaEnergy/EM-0001/3P/S, AlfaEnergy/EM-0001/1P/Lampu
+            elif len(parts) == 4 and parts[2] in ('3P', '1P'):
+                phase = parts[3]
+                try:
+                    data = json.loads(payload)
+                    if phase not in _mqtt_live_data[device_id]:
+                        _mqtt_live_data[device_id][phase] = {}
+                    for k, v in data.items():
+                        mapped = _ESP32_JSON_MAP.get(k, k)
+                        try:
+                            _mqtt_live_data[device_id][phase][mapped] = float(v)
+                        except (TypeError, ValueError):
+                            pass
+                except (json.JSONDecodeError, Exception):
+                    pass
+
+            # Case 4: Format baru legacy -> energymeter/alat1/L1
             elif len(parts) == 3 and re.match(r'^L\d+$', parts[2]):
-                # [FORMAT BARU] energymeter/alat1/L1
-                # ESP32 kirim 1 JSON per channel:
-                # {"V":220.1,"A":1.234,"W":270.1,"Hz":50.01,"kWh":0.123,"pf":0.987}
                 phase = parts[2]
                 try:
                     data = json.loads(payload)
@@ -73,8 +95,8 @@ def _on_message(client, userdata, msg):
                 except (json.JSONDecodeError, Exception):
                     pass
 
-            elif len(parts) == 4:
-                # [FORMAT LAMA] energymeter/alat1/L1/Voltage_V → nilai float tunggal
+            # Case 5: Format lama -> energymeter/alat1/L1/Voltage_V → nilai float tunggal
+            elif len(parts) == 4 and re.match(r'^L\d+$', parts[2]):
                 phase, metric = parts[2], parts[3]
                 if phase not in _mqtt_live_data[device_id]:
                     _mqtt_live_data[device_id][phase] = {}
@@ -120,6 +142,7 @@ def _start_mqtt():
             client.tls_set()
 
         def on_connect(c, userdata, flags, rc, properties=None):
+            c.subscribe("AlfaEnergy/#")
             c.subscribe("energymeter/#")
         client.on_connect = on_connect
         client.on_message = _on_message
@@ -132,12 +155,37 @@ def _start_mqtt():
 
 app = Flask(__name__, template_folder='../frontend', static_folder='../frontend', static_url_path='')
 _mqtt_client = _start_mqtt() if (not app.debug or os.environ.get("WERKZEUG_RUN_MAIN") == "true") else None
+
 _PHASE_RE = re.compile(r'^L\d+$')
+_PHASE_ORDER = {'R': 1, 'S': 2, 'T': 3}
+_NON_PHASE_KEYS = {'Timestamp', 'timestamp', 'meta', 'offline', 'status', 'cmd', 'realtime', 'RealTime'}
+
+def _phase_sort_key(p: str):
+    if not p:
+        return (99, 0, '')
+    up = p.upper()
+    if up in _PHASE_ORDER:
+        return (0, _PHASE_ORDER[up], p)
+    if _PHASE_RE.match(p):
+        try:
+            return (1, int(p[1:]), p)
+        except ValueError:
+            return (1, 999, p)
+    return (2, 0, p)
+
+def _is_valid_phase_key(k: str) -> bool:
+    if not k or not isinstance(k, str):
+        return False
+    if k in _NON_PHASE_KEYS:
+        return False
+    return bool(re.match(r'^[A-Za-z0-9_\-\s]{1,50}$', k.strip()))
+
 def _detect_phases(device_data: dict) -> list[str]:
     keys: set[str] = set()
     for src in [device_data.get('RealTime') or {}, (device_data.get('meta') or {}).get('sensors') or {}]:
-        if isinstance(src, dict): keys.update(k for k in src if _PHASE_RE.match(k))
-    return sorted(keys, key=lambda x: int(x[1:]))
+        if isinstance(src, dict):
+            keys.update(k for k in src if _is_valid_phase_key(k))
+    return sorted(keys, key=_phase_sort_key)
 
 db_pool = None
 sparta_db_pool = None
@@ -351,7 +399,7 @@ def get_db_cursor():
 def normalize(raw: dict | None) -> dict | None:
     if not raw: return None
     try:
-        phases = sorted([k for k in raw if _PHASE_RE.match(k)], key=lambda x: int(x[1:]))
+        phases = sorted([k for k in raw if _is_valid_phase_key(k) and isinstance(raw.get(k), dict)], key=_phase_sort_key)
         if not phases: return None
         def g(p, k):
             try: return float((raw.get(p) or {}).get(k, 0))
@@ -381,7 +429,7 @@ def validate_device_name(name: str) -> tuple[bool, str]:
     if not name: return False, 'Nama toko tidak boleh kosong'
     if '\x00' in name: return False, 'Karakter tidak diizinkan'
     return True, ''
-def validate_phase_key(phase: str) -> bool: return bool(_PHASE_RE.match(phase))
+def validate_phase_key(phase: str) -> bool: return _is_valid_phase_key(phase)
 _capture_lock = threading.RLock()
 _capture_states: dict[str, dict] = {}  # { device_id: capture_state_dict }
 
@@ -456,13 +504,12 @@ HEARTBEAT_INTERVAL = 30  # detik; push heartbeat ke live-buffer agar frontend ti
 
 def _get_telemetry_phases(device_id: str, raw: dict) -> list[str]:
     """Dapatkan daftar phase yang harus di-snapshot untuk device ini.
-    Prioritas: sensor terdaftar di DB → MQTT live data → fallback L1–L5.
-    Selalu mencakup semua phase yang ada di MQTT agar L6–L10 tersimpan."""
+    Prioritas: sensor terdaftar di DB → MQTT live data → fallback R, S, T."""
     phases: set[str] = set()
 
     # 1. Phase dari MQTT live data (paling aktual)
     for k in raw:
-        if _PHASE_RE.match(k):
+        if _is_valid_phase_key(k) and isinstance(raw.get(k), dict):
             phases.add(k)
 
     # 2. Phase dari sensor yang terdaftar di DB (termasuk yang mungkin sedang offline)
@@ -474,16 +521,16 @@ def _get_telemetry_phases(device_id: str, raw: dict) -> list[str]:
             sensors_list = row[0] if isinstance(row[0], list) else json.loads(row[0])
             for s in sensors_list:
                 ph = s.get('phase', '')
-                if ph and _PHASE_RE.match(ph):
+                if _is_valid_phase_key(ph):
                     phases.add(ph)
     except Exception:
         pass
 
     # 3. Fallback minimal jika tidak ada data sama sekali
     if not phases:
-        phases = {'L1', 'L2', 'L3', 'L4', 'L5'}
+        phases = {'R', 'S', 'T'}
 
-    return sorted(phases, key=lambda x: int(x[1:]))
+    return sorted(phases, key=_phase_sort_key)
 
 def _do_hourly_capture_device(device_id: str) -> None:
     try:
@@ -920,8 +967,9 @@ def list_devices():
             is_online = (now - last_seen <= 300) and bool(raw)
             phases = []
             if isinstance(raw, dict):
-                for ph in sorted([k for k in raw if _PHASE_RE.match(k)], key=lambda x: int(x[1:])):
-                    phases.append({'phase': ph, 'name': ph, 'enabled': True})
+                for ph in sorted([k for k in raw if _is_valid_phase_key(k) and isinstance(raw.get(k), dict)], key=_phase_sort_key):
+                    disp_name = f'Phase {ph}' if ph in ('R', 'S', 'T') else (f'Sensor {ph[1:]}' if _PHASE_RE.match(ph) else ph)
+                    phases.append({'phase': ph, 'name': disp_name, 'enabled': True})
             devices.append({
                 'id': did,
                 'name': did,
@@ -944,16 +992,17 @@ def list_devices():
             if sensors_json:
                 sensors_list = sensors_json if isinstance(sensors_json, list) else json.loads(sensors_json)
 
-            # Auto-discover phase baru dari MQTT live data (misal L17, L18, dst. yang baru terkirim)
+            # Auto-discover phase baru dari MQTT live data (misal R, S, T, L17, dsb.)
             raw = _mqtt_live_data.get(did) or {}
-            live_detected = [k for k in raw if _PHASE_RE.match(k)]
+            live_detected = [k for k in raw if _is_valid_phase_key(k) and isinstance(raw.get(k), dict)]
             existing_phases = {s.get('phase') for s in sensors_list if isinstance(s, dict)}
             added = False
             for ph in live_detected:
                 if ph not in existing_phases:
+                    disp_name = f'Phase {ph}' if ph in ('R', 'S', 'T') else (f'Sensor {ph[1:]}' if _PHASE_RE.match(ph) else ph)
                     sensors_list.append({
                         'phase': ph,
-                        'name': f'Sensor {ph[1:]}',
+                        'name': disp_name,
                         'enabled': True,
                         'properties': []
                     })
@@ -967,7 +1016,7 @@ def list_devices():
                 except Exception as ex:
                     print(f"Error auto-updating sensors for {did}: {ex}")
 
-            for s in sensors_list:
+            for s in sorted(sensors_list, key=lambda item: _phase_sort_key(item.get('phase', ''))):
                 phases.append({
                     'phase': s.get('phase'),
                     'name': s.get('name', s.get('phase')),
@@ -994,7 +1043,7 @@ def list_devices():
 def init_device_sensors(device_id: str):
     try:
         raw = _mqtt_live_data.get(device_id) or {}
-        detected = sorted([k for k in raw if _PHASE_RE.match(k)], key=lambda x: int(x[1:]))
+        detected = sorted([k for k in raw if _is_valid_phase_key(k) and isinstance(raw.get(k), dict)], key=_phase_sort_key)
         
         with get_db_cursor() as cur:
             cur.execute("SELECT sensors FROM devices WHERE id = %s", (device_id,))
@@ -1008,9 +1057,10 @@ def init_device_sensors(device_id: str):
             added = 0
             for ph in detected:
                 if ph not in existing_phases:
+                    disp_name = f'Phase {ph}' if ph in ('R', 'S', 'T') else (f'Sensor {ph[1:]}' if _PHASE_RE.match(ph) else ph)
                     current_sensors.append({
                         'phase': ph,
-                        'name': f'Sensor {ph[1:]}',
+                        'name': disp_name,
                         'enabled': True,
                         'properties': []
                     })
@@ -1323,7 +1373,7 @@ def capture_start():
         dname = (body.get('deviceName')  or '').strip()
         sname = (body.get('sessionName') or '').strip() or f'Rekaman {_ts_now()}'
         iv    = max(1, int(body.get('interval', 15)))
-        hints = sorted([p for p in (body.get('phases') or []) if _PHASE_RE.match(p)], key=lambda x: int(x[1:]))
+        hints = sorted([p for p in (body.get('phases') or []) if _is_valid_phase_key(p)], key=_phase_sort_key)
         if not did: return jsonify({'ok': False, 'error': 'deviceId harus diisi'}), 400
         if not hints: return jsonify({'ok': False, 'error': 'Minimal 1 sensor harus diaktifkan'}), 400
 
@@ -1366,6 +1416,7 @@ def capture_start():
         # MQTT publish & save state file dijalankan DI LUAR LOCK
         if _mqtt_client:
             try:
+                _mqtt_client.publish(f"AlfaEnergy/{did}/cmd/resetEnergy", "1")
                 _mqtt_client.publish(f"energymeter/{did}/cmd/resetEnergy", "1")
             except Exception:
                 pass

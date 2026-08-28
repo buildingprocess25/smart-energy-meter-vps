@@ -195,6 +195,12 @@ const PHASE_COLORS = [
     { line: '#FF1493', bar: 'rgba(255,20,147,0.85)', light: 'rgba(255,20,147,0.15)' },  // L5: Deep Pink
 ];
 
+const PHASE_STANDARD_COLORS = {
+    'R': { line: '#EF4444', bar: 'rgba(239,68,68,0.85)', light: 'rgba(239,68,68,0.15)' },   // Phase R: Red
+    'S': { line: '#F59E0B', bar: 'rgba(245,158,11,0.85)', light: 'rgba(245,158,11,0.15)' }, // Phase S: Amber / Yellow
+    'T': { line: '#3B82F6', bar: 'rgba(59,130,246,0.85)', light: 'rgba(59,130,246,0.15)' },  // Phase T: Blue
+};
+
 function hexToRgba(hex, alpha) {
     let c = (hex || '').replace('#', '');
     if (c.length === 3) c = c.split('').map(x => x + x).join('');
@@ -230,19 +236,38 @@ function getPhaseColors(phase) {
         };
     }
 
-    const idx = parseInt((phase || '').slice(1)) - 1;
-    if (!isNaN(idx) && idx >= 0) {
-        if (idx < 5) return PHASE_COLORS[idx];
-        // Dynamic Golden Angle generator for L6..L99 so L11+ gets unique vivid colors automatically!
-        const hue = (idx * 137.5) % 360;
-        const hex = hslToHex(hue, 75, 45);
-        return {
-            line: hex,
-            bar: hexToRgba(hex, 0.85),
-            light: hexToRgba(hex, 0.15)
-        };
+    const pUpper = (phase || '').toUpperCase();
+    if (PHASE_STANDARD_COLORS[pUpper]) {
+        return PHASE_STANDARD_COLORS[pUpper];
     }
-    return PHASE_COLORS[0];
+
+    if (/^L\d+$/i.test(phase)) {
+        const idx = parseInt(phase.slice(1)) - 1;
+        if (!isNaN(idx) && idx >= 0) {
+            if (idx < 5) return PHASE_COLORS[idx];
+            const hue = (idx * 137.5) % 360;
+            const hex = hslToHex(hue, 75, 45);
+            return {
+                line: hex,
+                bar: hexToRgba(hex, 0.85),
+                light: hexToRgba(hex, 0.15)
+            };
+        }
+    }
+
+    // Hash-based hue for custom load names
+    let hash = 0;
+    for (let i = 0; i < (phase || '').length; i++) {
+        hash = (hash << 5) - hash + phase.charCodeAt(i);
+        hash |= 0;
+    }
+    const hue = Math.abs(hash) % 360;
+    const hex = hslToHex(hue, 75, 45);
+    return {
+        line: hex,
+        bar: hexToRgba(hex, 0.85),
+        light: hexToRgba(hex, 0.15)
+    };
 }
 
 async function updateSensorColor(deviceId, phase, color) {
@@ -673,10 +698,37 @@ function hideIscTooltip() {
     el.style.opacity = '0';
     el.style.pointerEvents = 'none';
 }
+function _phaseSortCompare(a, b) {
+    if (!a && !b) return 0;
+    if (!a) return 1;
+    if (!b) return -1;
+    const order = { 'R': 1, 'S': 2, 'T': 3 };
+    const aUp = a.toUpperCase();
+    const bUp = b.toUpperCase();
+    const aRank = order[aUp] ? order[aUp] : (/^L\d+$/i.test(a) ? 10 + (parseInt(a.slice(1)) || 0) : 100);
+    const bRank = order[bUp] ? order[bUp] : (/^L\d+$/i.test(b) ? 10 + (parseInt(b.slice(1)) || 0) : 100);
+    if (aRank !== bRank) return aRank - bRank;
+    return a.localeCompare(b);
+}
+
+const _NON_PHASE_KEYS_JS = new Set(['Timestamp', 'timestamp', 'meta', 'offline', 'status', 'cmd', 'realtime', 'RealTime']);
+function _isValidPhaseKeyJS(k) {
+    if (!k || typeof k !== 'string') return false;
+    if (_NON_PHASE_KEYS_JS.has(k)) return false;
+    return /^[A-Za-z0-9_\-\s]{1,50}$/.test(k.trim());
+}
+
 function getPhaseLabel(phase) {
     const dev = _deviceListCache.find(d => d.id === selectedDeviceId);
     const phaseObj = dev?.phases?.find(p => p.phase === phase);
-    return phaseObj?.name && phaseObj.name !== phase ? `${phase} (${phaseObj.name})` : phase;
+    if (phaseObj?.name && phaseObj.name !== phase) {
+        return `${phase} (${phaseObj.name})`;
+    }
+    const up = (phase || '').toUpperCase();
+    if (up === 'R' || up === 'S' || up === 'T') {
+        return `Phase ${up}`;
+    }
+    return phase;
 }
 const $ = id => document.getElementById(id);
 const DOM = {
@@ -696,8 +748,8 @@ function resetChartData() { phaseChartData = {}; chartLabels = []; chartTimestam
 function _detectPhaseKeys(raw) {
     if (!raw || typeof raw !== 'object') return [];
     return Object.keys(raw)
-        .filter(k => /^L\d+$/.test(k))
-        .sort((a, b) => parseInt(a.slice(1)) - parseInt(b.slice(1)));
+        .filter(k => _isValidPhaseKeyJS(k) && typeof raw[k] === 'object' && raw[k] !== null)
+        .sort(_phaseSortCompare);
 }
 function _getEnabledPhaseKeys() {
     const dev = _deviceListCache.find(d => d.id === selectedDeviceId);
@@ -708,11 +760,11 @@ function _getEnabledPhaseKeys() {
         });
     }
     // Dynamically merge any newly detected phases from chart data or raw live data
-    const chartKeys = Object.keys(phaseChartData).filter(k => /^L\d+$/.test(k));
-    const rawKeys = rawRealtimeData ? Object.keys(rawRealtimeData).filter(k => /^L\d+$/.test(k)) : [];
+    const chartKeys = Object.keys(phaseChartData).filter(k => _isValidPhaseKeyJS(k));
+    const rawKeys = rawRealtimeData ? Object.keys(rawRealtimeData).filter(k => _isValidPhaseKeyJS(k) && typeof rawRealtimeData[k] === 'object' && rawRealtimeData[k] !== null) : [];
     const merged = new Set([...registered, ...chartKeys, ...rawKeys]);
-    if (!merged.size) return ['L1'];
-    return Array.from(merged).sort((a, b) => parseInt(a.slice(1)) - parseInt(b.slice(1)));
+    if (!merged.size) return ['R', 'S', 'T'];
+    return Array.from(merged).sort(_phaseSortCompare);
 }
 function normalizeHistoryData(raw) {
     if (!raw) return null;
@@ -808,7 +860,7 @@ function updatePhaseSelector(phases) {
     if (!container) return;
     const dev = _deviceListCache.find(d => d.id === selectedDeviceId);
     const enabledKeys = _getEnabledPhaseKeys();
-    const mergedPhases = Array.from(new Set([...(phases || []), ...enabledKeys])).sort((a, b) => parseInt(a.slice(1)) - parseInt(b.slice(1)));
+    const mergedPhases = Array.from(new Set([...(phases || []), ...enabledKeys])).sort(_phaseSortCompare);
 
     const enabledPhases = mergedPhases.filter(p => {
         const po = dev?.phases?.find(ph => ph.phase === p);
@@ -821,7 +873,7 @@ function updatePhaseSelector(phases) {
         const phaseObj = dev?.phases?.find(ph => ph.phase === p);
         const label = phaseObj?.name && phaseObj.name !== p
             ? `${p} <span class="phase-btn-sub">${phaseObj.name}</span>`
-            : p;
+            : (['R', 'S', 'T'].includes(p.toUpperCase()) ? `Phase ${p.toUpperCase()}` : p);
         return `<button class="phase-btn${selectedPhase === p ? ' active' : ''}" data-phase="${p}" onclick="setPhase('${p}')">${label}</button>`;
     }).join('');
     if (selectedPhase) {
@@ -2065,9 +2117,9 @@ async function _chartInit(deviceId) {
         });
         // tambahkan phase dari cache ke daftar phase aktif
         Object.keys(cache.phaseChartData).forEach(ph => {
-            if (/^L\d+$/.test(ph) && !phases.includes(ph)) phases.push(ph);
+            if (_isValidPhaseKeyJS(ph) && !phases.includes(ph)) phases.push(ph);
         });
-        phases.sort((a, b) => parseInt(a.slice(1)) - parseInt(b.slice(1)));
+        phases.sort(_phaseSortCompare);
     }
     // ────────────────────────────────────────────────────────────────────────
 
@@ -2116,7 +2168,7 @@ async function _chartInit(deviceId) {
                 if (!item?.data || item.data.offline) continue;
                 const ts = item.timestamp;
                 Object.keys(item.data).forEach(ph => {
-                    if (!/^L\d+$/.test(ph)) return;
+                    if (!_isValidPhaseKeyJS(ph) || typeof item.data[ph] !== 'object' || !item.data[ph]) return;
                     // Update _phaseLastSeen dengan timestamp terbaru yang ada data untuk phase ini
                     if (!_phaseLastSeen[ph] || ts > _phaseLastSeen[ph]) {
                         _phaseLastSeen[ph] = ts;
@@ -2148,11 +2200,11 @@ async function _chartInit(deviceId) {
             const d = liveData[k] || histData[k];
             if (d && typeof d === 'object') {
                 Object.keys(d).forEach(ph => {
-                    if (/^L\d+$/.test(ph) && !phases.includes(ph)) phases.push(ph);
+                    if (_isValidPhaseKeyJS(ph) && typeof d[ph] === 'object' && d[ph] && !phases.includes(ph)) phases.push(ph);
                 });
             }
         });
-        phases.sort((a, b) => parseInt(a.slice(1)) - parseInt(b.slice(1)));
+        phases.sort(_phaseSortCompare);
 
         // Waktu pertama live-buffer tersedia
         const liveStart = liveKeys.length ? +liveKeys[0] : now;
@@ -2213,7 +2265,7 @@ async function _chartInit(deviceId) {
 }
 function _rebuildRawFromPoint(point) {
     if (!point) return null;
-    const phases = Object.keys(point).filter(k => /^L\d+$/.test(k));
+    const phases = Object.keys(point).filter(k => _isValidPhaseKeyJS(k) && typeof point[k] === 'object' && point[k]);
     if (!phases.length) return null;
     const raw = {};
     phases.forEach(ph => { raw[ph] = point[ph]; });
@@ -2222,7 +2274,7 @@ function _rebuildRawFromPoint(point) {
 function _appendChartPoint(point) {
     if (!point || !point.ts) return;
     const ts = point.ts;
-    const phases = Object.keys(point).filter(k => /^L\d+$/.test(k));
+    const phases = Object.keys(point).filter(k => _isValidPhaseKeyJS(k) && typeof point[k] === 'object' && point[k]);
     if (!phases.length) return;
     const _d = new Date(ts);
     const _today = new Date();
@@ -3312,21 +3364,19 @@ function startLiveBufferPolling(deviceId) {
                     // Update per-phase last seen timestamp & last known data untuk status realtime
                     const nowMs = Date.now();
                     Object.keys(lastValidItem.data).forEach(ph => {
-                        if (/^L\d+$/.test(ph)) {
+                        if (_isValidPhaseKeyJS(ph) && typeof lastValidItem.data[ph] === 'object' && lastValidItem.data[ph]) {
                             _phaseLastSeen[ph] = nowMs;
-                            if (lastValidItem.data[ph]) {
-                                _lastKnownPhaseData[ph] = lastValidItem.data[ph];
-                            }
+                            _lastKnownPhaseData[ph] = lastValidItem.data[ph];
                         }
                     });
 
                     _processIncomingMQTTData();
                     updateConnectionStatus(true);
 
-                    // Panggil loadDevices jika terdeteksi phase baru (misal L17) yang belum terdaftar di UI
+                    // Panggil loadDevices jika terdeteksi phase baru yang belum terdaftar di UI
                     const dev = _deviceListCache.find(d => d.id === selectedDeviceId);
                     const knownPhases = (dev?.phases || []).map(p => p.phase);
-                    const incomingPhases = Object.keys(lastValidItem.data).filter(k => /^L\d+$/.test(k));
+                    const incomingPhases = Object.keys(lastValidItem.data).filter(k => _isValidPhaseKeyJS(k) && typeof lastValidItem.data[k] === 'object');
                     if (incomingPhases.some(p => !knownPhases.includes(p))) {
                         loadDevices();
                     }
@@ -3387,26 +3437,22 @@ function initMQTT() {
         try {
             const payload = message.toString();
             const parts = topic.split('/');
-            if (parts.length >= 2 && parts[0] === 'energymeter' && parts[1] === selectedDeviceId) {
+            if (parts.length >= 2 && (parts[0] === 'energymeter' || parts[0] === 'AlfaEnergy') && parts[1] === selectedDeviceId) {
                 if (!rawRealtimeData) {
                     rawRealtimeData = {};
                 }
 
-                // [FIX] Update timestamp segera saat MQTT message manapun diterima dari device
-                // Ini mencegah false-offline saat bacaan stabil (ESP32 delta filter suppress publish)
+                // Update timestamp segera saat MQTT message manapun diterima dari device
                 lastDataTimestamp = Date.now();
 
+                // Case 1: Timestamp -> AlfaEnergy/EM-0001/Timestamp
                 if (parts.length === 3 && parts[2] === 'Timestamp') {
-                    // energymeter/alat1/Timestamp
                     rawRealtimeData.Timestamp = payload;
                     _processIncomingMQTTData();
 
-                } else if (parts.length === 3 && /^L\d+$/.test(parts[2])) {
-                    // [FORMAT BARU] energymeter/alat1/L1
-                    // ESP32 kirim 1 JSON per channel:
-                    // {"V":220.1,"A":1.234,"W":270.1,"Hz":50.01,"kWh":0.123,"pf":0.987}
-                    const phase = parts[2];
-                    // Track per-phase last-seen timestamp
+                // Case 2: AlfaEnergy Mode 3P / 1P -> AlfaEnergy/EM-0001/3P/R, AlfaEnergy/EM-0001/1P/Lampu
+                } else if (parts.length === 4 && (parts[2] === '3P' || parts[2] === '1P')) {
+                    const phase = parts[3];
                     _phaseLastSeen[phase] = Date.now();
                     try {
                         const data = JSON.parse(payload);
@@ -3420,10 +3466,25 @@ function initMQTT() {
                         console.error('[MQTT] JSON parse error:', parseErr);
                     }
 
-                } else if (parts.length === 4) {
-                    // [FORMAT LAMA] energymeter/alat1/L1/Voltage_V → float tunggal
+                // Case 3: Format baru legacy -> energymeter/alat1/L1
+                } else if (parts.length === 3 && /^L\d+$/i.test(parts[2])) {
                     const phase = parts[2];
-                    // Track per-phase last-seen timestamp (format lama)
+                    _phaseLastSeen[phase] = Date.now();
+                    try {
+                        const data = JSON.parse(payload);
+                        if (!rawRealtimeData[phase]) rawRealtimeData[phase] = {};
+                        Object.entries(data).forEach(([k, v]) => {
+                            const mapped = _ESP32_JSON_MAP_JS[k] || k;
+                            rawRealtimeData[phase][mapped] = parseFloat(v) || 0;
+                        });
+                        _processIncomingMQTTData();
+                    } catch (parseErr) {
+                        console.error('[MQTT] JSON parse error:', parseErr);
+                    }
+
+                // Case 4: Format lama -> energymeter/alat1/L1/Voltage_V
+                } else if (parts.length === 4 && /^L\d+$/i.test(parts[2])) {
+                    const phase = parts[2];
                     _phaseLastSeen[phase] = Date.now();
                     const metric = parts[3];
                     if (!rawRealtimeData[phase]) {
@@ -3453,17 +3514,27 @@ function _subscribeToDevice(deviceId) {
     if (!_mqttClient || !_mqttClient.connected) return;
 
     if (_subscribedTopic) {
-        _mqttClient.unsubscribe(_subscribedTopic);
+        if (Array.isArray(_subscribedTopic)) {
+            _subscribedTopic.forEach(t => _mqttClient.unsubscribe(t));
+        } else {
+            _mqttClient.unsubscribe(_subscribedTopic);
+        }
         console.log(`[MQTT] Unsubscribed from: ${_subscribedTopic}`);
     }
 
-    _subscribedTopic = `energymeter/${deviceId}/#`;
-    _mqttClient.subscribe(_subscribedTopic, (err) => {
-        if (err) {
-            console.error(`[MQTT] Subscription error for ${deviceId}:`, err);
-        } else {
-            console.log(`[MQTT] Subscribed to topic: ${_subscribedTopic}`);
-        }
+    _subscribedTopic = [
+        `AlfaEnergy/${deviceId}/#`,
+        `energymeter/${deviceId}/#`
+    ];
+
+    _subscribedTopic.forEach(top => {
+        _mqttClient.subscribe(top, (err) => {
+            if (err) {
+                console.error(`[MQTT] Subscription error for ${top}:`, err);
+            } else {
+                console.log(`[MQTT] Subscribed to topic: ${top}`);
+            }
+        });
     });
 }
 
@@ -3472,8 +3543,6 @@ function _processIncomingMQTTData() {
     const data = normalizeHistoryData(rawRealtimeData);
     if (!data) { updateConnectionStatus(false); return; }
 
-    // [FIX] Hapus _firstSnap — data pertama langsung diproses, tidak dibuang
-    // Dulu: data pertama selalu dibuang dan tidak pernah set isConnected=true
     _firstSnap = false;
 
 

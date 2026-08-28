@@ -38,3 +38,5 @@ walkthrough.md
 # Arduino / ESP32 Code
 *.ino
 exampleCodeEsp32.ino
+AlfaEnergy/
+AlfaEnergy
