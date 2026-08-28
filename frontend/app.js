@@ -753,23 +753,34 @@ function _detectPhaseKeys(raw) {
 }
 function _getEnabledPhaseKeys() {
     const dev = _deviceListCache.find(d => d.id === selectedDeviceId);
-    const registered = [];
-    if (dev && dev.phases && dev.phases.length > 0) {
-        dev.phases.forEach(p => {
-            if (p.enabled !== false) registered.push(p.phase);
-        });
+    if (dev && Array.isArray(dev.phases) && dev.phases.length > 0) {
+        const enabled = dev.phases
+            .filter(p => p.enabled !== false)
+            .map(p => p.phase);
+        if (enabled.length > 0) {
+            return enabled.sort(_phaseSortCompare);
+        }
+        return [dev.phases[0].phase];
     }
-    // Dynamically merge any newly detected phases from chart data or raw live data
-    const chartKeys = Object.keys(phaseChartData).filter(k => _isValidPhaseKeyJS(k));
+    // Fallback HANYA jika device belum memiliki daftar sensor sama sekali di database
     const rawKeys = rawRealtimeData ? Object.keys(rawRealtimeData).filter(k => _isValidPhaseKeyJS(k) && typeof rawRealtimeData[k] === 'object' && rawRealtimeData[k] !== null) : [];
-    const merged = new Set([...registered, ...chartKeys, ...rawKeys]);
-    if (!merged.size) return ['R', 'S', 'T'];
-    return Array.from(merged).sort(_phaseSortCompare);
+    if (rawKeys.length > 0) {
+        return rawKeys.sort(_phaseSortCompare);
+    }
+    return ['R', 'S', 'T'];
 }
 function normalizeHistoryData(raw) {
     if (!raw) return null;
-    const phases = _detectPhaseKeys(raw);
-    if (!phases.length) return null;
+    const enabledKeys = _getEnabledPhaseKeys();
+    const phases = enabledKeys.filter(p => raw[p] && typeof raw[p] === 'object');
+    if (!phases.length) {
+        const detected = _detectPhaseKeys(raw);
+        if (detected.length > 0) {
+            phases.push(...detected);
+        } else {
+            return null;
+        }
+    }
     const getVal = (phase, key) =>
         raw[phase] && raw[phase][key] ? parseFloat(raw[phase][key]) || 0 : 0;
     const voltages = phases.map(p => getVal(p, 'Voltage (V)'));
@@ -859,13 +870,8 @@ function updatePhaseSelector(phases) {
     const container = $('phaseSelectorBtns');
     if (!container) return;
     const dev = _deviceListCache.find(d => d.id === selectedDeviceId);
-    const enabledKeys = _getEnabledPhaseKeys();
-    const mergedPhases = Array.from(new Set([...(phases || []), ...enabledKeys])).sort(_phaseSortCompare);
+    const enabledPhases = _getEnabledPhaseKeys();
 
-    const enabledPhases = mergedPhases.filter(p => {
-        const po = dev?.phases?.find(ph => ph.phase === p);
-        return !po || po.enabled !== false;
-    });
     if (!selectedPhase || !enabledPhases.includes(selectedPhase)) {
         selectedPhase = enabledPhases[0] || '';
     }
@@ -2051,11 +2057,18 @@ function _chartCacheKey(deviceId) { return `chart_cache_v${_CHART_CACHE_VERSION}
 function _saveChartCache() {
     if (!selectedDeviceId || !chartLabels.length) return;
     try {
+        const validPhases = _getEnabledPhaseKeys();
+        const filteredPhaseChartData = {};
+        validPhases.forEach(ph => {
+            if (phaseChartData[ph]) {
+                filteredPhaseChartData[ph] = phaseChartData[ph];
+            }
+        });
         const payload = JSON.stringify({
             savedAt: Date.now(),
             chartLabels,
             chartTimestamps,
-            phaseChartData,
+            phaseChartData: filteredPhaseChartData,
         });
         localStorage.setItem(_chartCacheKey(selectedDeviceId), payload);
     } catch (_) { /* quota exceeded – ignore */ }
@@ -2105,21 +2118,19 @@ async function _chartInit(deviceId) {
 
     // ── Restore dari localStorage (data sebelum refresh / server restart) ──
     const cache = _loadChartCache(deviceId);
+    const validPhasesSet = new Set(phases);
     if (cache) {
         chartLabels = [...cache.chartLabels];
         chartTimestamps = [...cache.chartTimestamps];
-        // deep-copy tiap phase
+        // deep-copy HANYA untuk phase yang saat ini aktif/terdaftar
         Object.keys(cache.phaseChartData).forEach(ph => {
-            phaseChartData[ph] = {};
-            Object.keys(cache.phaseChartData[ph]).forEach(param => {
-                phaseChartData[ph][param] = [...cache.phaseChartData[ph][param]];
-            });
+            if (validPhasesSet.has(ph)) {
+                phaseChartData[ph] = {};
+                Object.keys(cache.phaseChartData[ph]).forEach(param => {
+                    phaseChartData[ph][param] = [...cache.phaseChartData[ph][param]];
+                });
+            }
         });
-        // tambahkan phase dari cache ke daftar phase aktif
-        Object.keys(cache.phaseChartData).forEach(ph => {
-            if (_isValidPhaseKeyJS(ph) && !phases.includes(ph)) phases.push(ph);
-        });
-        phases.sort(_phaseSortCompare);
     }
     // ────────────────────────────────────────────────────────────────────────
 
@@ -2168,7 +2179,7 @@ async function _chartInit(deviceId) {
                 if (!item?.data || item.data.offline) continue;
                 const ts = item.timestamp;
                 Object.keys(item.data).forEach(ph => {
-                    if (!_isValidPhaseKeyJS(ph) || typeof item.data[ph] !== 'object' || !item.data[ph]) return;
+                    if (!validPhasesSet.has(ph) || typeof item.data[ph] !== 'object' || !item.data[ph]) return;
                     // Update _phaseLastSeen dengan timestamp terbaru yang ada data untuk phase ini
                     if (!_phaseLastSeen[ph] || ts > _phaseLastSeen[ph]) {
                         _phaseLastSeen[ph] = ts;
@@ -2194,17 +2205,6 @@ async function _chartInit(deviceId) {
             histList.forEach(item => { if (item?.timestamp) histData[item.timestamp] = item.data; });
         }
         const histKeys = Object.keys(histData).sort((a, b) => +a - +b);
-
-        // Kumpulkan semua phase dari kedua sumber
-        [...liveKeys, ...histKeys].forEach(k => {
-            const d = liveData[k] || histData[k];
-            if (d && typeof d === 'object') {
-                Object.keys(d).forEach(ph => {
-                    if (_isValidPhaseKeyJS(ph) && typeof d[ph] === 'object' && d[ph] && !phases.includes(ph)) phases.push(ph);
-                });
-            }
-        });
-        phases.sort(_phaseSortCompare);
 
         // Waktu pertama live-buffer tersedia
         const liveStart = liveKeys.length ? +liveKeys[0] : now;
@@ -3120,7 +3120,7 @@ function toggleChartPhase(phase) {
 function renderPhaseToggles() {
     const container = document.getElementById('chartPhaseToggles');
     if (!container) return;
-    const phases = _getEnabledPhaseKeys().slice().sort((a, b) => parseInt(a.slice(1)) - parseInt(b.slice(1)));
+    const phases = _getEnabledPhaseKeys().slice().sort(_phaseSortCompare);
     if (phases.length <= 1) {
         container.style.display = 'none';
         return;

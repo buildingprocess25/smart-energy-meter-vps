@@ -992,29 +992,30 @@ def list_devices():
             if sensors_json:
                 sensors_list = sensors_json if isinstance(sensors_json, list) else json.loads(sensors_json)
 
-            # Auto-discover phase baru dari MQTT live data (misal R, S, T, L17, dsb.)
-            raw = _mqtt_live_data.get(did) or {}
-            live_detected = [k for k in raw if _is_valid_phase_key(k) and isinstance(raw.get(k), dict)]
-            existing_phases = {s.get('phase') for s in sensors_list if isinstance(s, dict)}
-            added = False
-            for ph in live_detected:
-                if ph not in existing_phases:
-                    disp_name = f'Phase {ph}' if ph in ('R', 'S', 'T') else (f'Sensor {ph[1:]}' if _PHASE_RE.match(ph) else ph)
-                    sensors_list.append({
-                        'phase': ph,
-                        'name': disp_name,
-                        'enabled': True,
-                        'properties': []
-                    })
-                    existing_phases.add(ph)
-                    added = True
+            # Auto-discover phase baru HANYA jika device baru dan belum memiliki sensor sama sekali di database
+            if len(sensors_list) == 0:
+                raw = _mqtt_live_data.get(did) or {}
+                live_detected = [k for k in raw if _is_valid_phase_key(k) and isinstance(raw.get(k), dict)]
+                existing_phases = {s.get('phase', '').lower() for s in sensors_list if isinstance(s, dict)}
+                added = False
+                for ph in live_detected:
+                    if ph.lower() not in existing_phases:
+                        disp_name = f'Phase {ph}' if ph in ('R', 'S', 'T') else (f'Sensor {ph[1:]}' if _PHASE_RE.match(ph) else ph)
+                        sensors_list.append({
+                            'phase': ph,
+                            'name': disp_name,
+                            'enabled': True,
+                            'properties': []
+                        })
+                        existing_phases.add(ph.lower())
+                        added = True
 
-            if added:
-                try:
-                    with get_db_cursor() as cur2:
-                        cur2.execute("UPDATE devices SET sensors = %s WHERE id = %s", (json.dumps(sensors_list), did))
-                except Exception as ex:
-                    print(f"Error auto-updating sensors for {did}: {ex}")
+                if added:
+                    try:
+                        with get_db_cursor() as cur2:
+                            cur2.execute("UPDATE devices SET sensors = %s WHERE id = %s", (json.dumps(sensors_list), did))
+                    except Exception as ex:
+                        print(f"Error auto-updating sensors for {did}: {ex}")
 
             for s in sorted(sensors_list, key=lambda item: _phase_sort_key(item.get('phase', ''))):
                 phases.append({
@@ -1147,7 +1148,6 @@ def delete_device_permanently(device_id: str):
 
 @app.route('/api/devices/<device_id>/sensors/<phase>/rename', methods=['POST'])
 def rename_sensor(device_id: str, phase: str):
-    phase = phase.upper()
     if not validate_phase_key(phase): return jsonify({'ok': False, 'error': f'Sensor tidak valid: {phase}.'}), 400
     name = ((request.get_json(silent=True) or {}).get('name') or '').strip()
     ok, err = validate_device_name(name)
@@ -1162,7 +1162,7 @@ def rename_sensor(device_id: str, phase: str):
                 
             found = False
             for s in sensors_list:
-                if s.get('phase') == phase:
+                if s.get('phase', '').lower() == phase.lower():
                     s['name'] = name
                     found = True
                     break
@@ -1181,7 +1181,6 @@ def rename_sensor(device_id: str, phase: str):
 
 @app.route('/api/devices/<device_id>/sensors/<phase>/color', methods=['POST'])
 def set_sensor_color(device_id: str, phase: str):
-    phase = phase.upper()
     if not validate_phase_key(phase): return jsonify({'ok': False, 'error': f'Sensor tidak valid: {phase}.'}), 400
     color = ((request.get_json(silent=True) or {}).get('color') or '').strip()
     try:
@@ -1194,7 +1193,7 @@ def set_sensor_color(device_id: str, phase: str):
                 
             found = False
             for s in sensors_list:
-                if s.get('phase') == phase:
+                if s.get('phase', '').lower() == phase.lower():
                     s['color'] = color
                     found = True
                     break
@@ -1214,7 +1213,6 @@ def set_sensor_color(device_id: str, phase: str):
 
 @app.route('/api/devices/<device_id>/sensors/<phase>/enabled', methods=['POST'])
 def set_sensor_enabled(device_id: str, phase: str):
-    phase = phase.upper()
     if not validate_phase_key(phase): return jsonify({'ok': False, 'error': f'Sensor tidak valid: {phase}.'}), 400
     body = request.get_json(silent=True) or {}
     enabled = bool(body.get('enabled', True))
@@ -1228,19 +1226,25 @@ def set_sensor_enabled(device_id: str, phase: str):
                 
             found = False
             for s in sensors_list:
-                if s.get('phase') == phase:
+                if s.get('phase', '').lower() == phase.lower():
                     s['enabled'] = enabled
                     found = True
                     break
             if not found:
                 sensors_list.append({
                     'phase': phase,
-                    'name': f'Sensor {phase[1:]}',
+                    'name': f'Phase {phase}' if phase in ('R', 'S', 'T') else phase,
                     'enabled': enabled,
                     'properties': []
                 })
                 
             cur.execute("UPDATE devices SET sensors = %s WHERE id = %s", (json.dumps(sensors_list), device_id))
+
+        if not enabled and device_id in _mqtt_live_data and isinstance(_mqtt_live_data[device_id], dict):
+            keys_to_pop = [k for k in _mqtt_live_data[device_id] if k.lower() == phase.lower()]
+            for k in keys_to_pop:
+                _mqtt_live_data[device_id].pop(k, None)
+
         return jsonify({'ok': True, 'enabled': enabled, 'phase': phase, 'device_id': device_id})
     except Exception as e:
         print(f"Error in set_sensor_enabled: {e}")
@@ -1248,7 +1252,6 @@ def set_sensor_enabled(device_id: str, phase: str):
 
 @app.route('/api/devices/<device_id>/sensors/<phase>', methods=['DELETE'])
 def delete_sensor(device_id: str, phase: str):
-    phase = phase.upper()
     if not validate_phase_key(phase): return jsonify({'ok': False, 'error': f'Sensor tidak valid: {phase}.'}), 400
     try:
         with get_db_cursor() as cur:
@@ -1258,11 +1261,20 @@ def delete_sensor(device_id: str, phase: str):
             if row and row[0]:
                 sensors_list = row[0] if isinstance(row[0], list) else json.loads(row[0])
                 
-            filtered_sensors = [s for s in sensors_list if s.get('phase') != phase]
+            filtered_sensors = [s for s in sensors_list if s.get('phase', '').lower() != phase.lower()]
             cur.execute("UPDATE devices SET sensors = %s WHERE id = %s", (json.dumps(filtered_sensors), device_id))
             
         if device_id in _mqtt_live_data and isinstance(_mqtt_live_data[device_id], dict):
-            _mqtt_live_data[device_id].pop(phase, None)
+            keys_to_pop = [k for k in _mqtt_live_data[device_id] if k.lower() == phase.lower()]
+            for k in keys_to_pop:
+                _mqtt_live_data[device_id].pop(k, None)
+
+        if device_id in _device_live_buffer:
+            for item in _device_live_buffer[device_id]:
+                if isinstance(item, dict) and isinstance(item.get('data'), dict):
+                    keys_to_pop = [k for k in item['data'] if k.lower() == phase.lower()]
+                    for k in keys_to_pop:
+                        item['data'].pop(k, None)
 
         return jsonify({'ok': True, 'phase': phase, 'device_id': device_id})
     except Exception as e:
