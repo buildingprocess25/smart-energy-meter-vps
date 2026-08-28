@@ -2476,8 +2476,15 @@ async function loadDevices() {
 
         const initialLoad = !selectedDeviceId;
         if (initialLoad) {
-            selectedDeviceId = visible[0].id;
-            selectedDeviceName = visible[0].name && visible[0].name !== visible[0].id ? `${visible[0].id} ${visible[0].name}` : visible[0].id;
+            const savedDeviceId = localStorage.getItem('sem_last_device_id');
+            const savedDev = savedDeviceId ? visible.find(d => d.id === savedDeviceId) : null;
+            const firstOnlineDev = visible.find(d => d.online);
+            
+            // Prioritas: 1) Device terakhir yang dipilih user, 2) Device yang sedang ONLINE, 3) Device pertama di list
+            const targetDev = savedDev || firstOnlineDev || visible[0];
+            selectedDeviceId = targetDev.id;
+            selectedDeviceName = targetDev.name && targetDev.name !== targetDev.id ? `${targetDev.id} ${targetDev.name}` : targetDev.id;
+            try { localStorage.setItem('sem_last_device_id', selectedDeviceId); } catch (_) { }
         }
         const activeDev = visible.find(d => d.id === selectedDeviceId);
         if (!initialLoad && activeDev) {
@@ -2513,7 +2520,8 @@ function _populateDeviceSelect(devices) {
     const currentVal = DOM.deviceSelect?.value || DOM.summaryDeviceSelect?.value || selectedDeviceId;
     const html = devices.map(d => {
         const displayName = d.name && d.name !== d.id ? `${d.id} ${d.name}` : d.id;
-        return `<option value="${d.id}"${d.id === currentVal ? ' selected' : ''}>${displayName}</option>`;
+        const statusText = d.online ? 'Online' : 'Offline';
+        return `<option value="${d.id}"${d.id === currentVal ? ' selected' : ''}>${displayName} (${statusText})</option>`;
     }).join('');
     selects.forEach(sel => sel.innerHTML = html);
 }
@@ -3161,6 +3169,7 @@ async function onDeviceChange(deviceId) {
     if (_chartTimer) { clearInterval(_chartTimer); _chartTimer = null; }
     if (_liveBufferPollTimer) { clearInterval(_liveBufferPollTimer); _liveBufferPollTimer = null; }
     selectedDeviceId = deviceId;
+    try { localStorage.setItem('sem_last_device_id', deviceId); } catch (_) { }
     const activeDev = _deviceListCache.find(d => d.id === deviceId);
     selectedDeviceName = activeDev && activeDev.name && activeDev.name !== activeDev.id ? `${activeDev.id} ${activeDev.name}` : deviceId;
     selectedPhase = '';
