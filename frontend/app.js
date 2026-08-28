@@ -798,6 +798,14 @@ function _phaseSortCompare(a, b) {
     const aRank = order[aUp] ? order[aUp] : (/^L\d+$/i.test(a) ? 10 + (parseInt(a.slice(1)) || 0) : 100);
     const bRank = order[bUp] ? order[bUp] : (/^L\d+$/i.test(b) ? 10 + (parseInt(b.slice(1)) || 0) : 100);
     if (aRank !== bRank) return aRank - bRank;
+    
+    // Sort 1P by type and unit number e.g. LAMP_01 vs REFRIGERATOR_01
+    const ma = aUp.match(/^([A-Z]+)[_-]?(\d+)$/);
+    const mb = bUp.match(/^([A-Z]+)[_-]?(\d+)$/);
+    if (ma && mb) {
+        if (ma[1] !== mb[1]) return ma[1].localeCompare(mb[1]);
+        return parseInt(ma[2], 10) - parseInt(mb[2], 10);
+    }
     return a.localeCompare(b);
 }
 
@@ -806,19 +814,6 @@ function _isValidPhaseKeyJS(k) {
     if (!k || typeof k !== 'string') return false;
     if (_NON_PHASE_KEYS_JS.has(k)) return false;
     return /^[A-Za-z0-9_\-\s]{1,50}$/.test(k.trim());
-}
-
-function getPhaseLabel(phase) {
-    const dev = _deviceListCache.find(d => d.id === selectedDeviceId);
-    const phaseObj = dev?.phases?.find(p => p.phase === phase);
-    if (phaseObj?.name && phaseObj.name !== phase) {
-        return `${phase} (${phaseObj.name})`;
-    }
-    const up = (phase || '').toUpperCase();
-    if (up === 'R' || up === 'S' || up === 'T') {
-        return `Phase ${up}`;
-    }
-    return phase;
 }
 const $ = id => document.getElementById(id);
 const DOM = {
@@ -967,10 +962,25 @@ function updatePhaseSelector(phases) {
     }
     container.innerHTML = enabledPhases.map(p => {
         const phaseObj = dev?.phases?.find(ph => ph.phase === p);
-        const label = phaseObj?.name && phaseObj.name !== p
-            ? `${p} <span class="phase-btn-sub">${phaseObj.name}</span>`
-            : (['R', 'S', 'T'].includes(p.toUpperCase()) ? `Phase ${p.toUpperCase()}` : p);
-        return `<button class="phase-btn${selectedPhase === p ? ' active' : ''}" data-phase="${p}" onclick="setPhase('${p}')">${label}</button>`;
+        const shortBadge = getPhaseShortBadge(p);
+        const fullName = phaseObj?.name || getPhaseDefaultFullName(p);
+        const isStandard3P = ['R', 'S', 'T'].includes(p.toUpperCase());
+        
+        let label = '';
+        if (isStandard3P) {
+            if (phaseObj?.name && phaseObj.name !== p && phaseObj.name !== `Phase ${p.toUpperCase()}`) {
+                label = `${p.toUpperCase()} <span class="phase-btn-sub">${phaseObj.name}</span>`;
+            } else {
+                label = `Phase ${p.toUpperCase()}`;
+            }
+        } else {
+            if (fullName && fullName !== shortBadge) {
+                label = `${shortBadge} <span class="phase-btn-sub">${fullName}</span>`;
+            } else {
+                label = shortBadge;
+            }
+        }
+        return `<button class="phase-btn${selectedPhase === p ? ' active' : ''}" data-phase="${p}" onclick="setPhase('${p}')" title="${fullName} (${p})">${label}</button>`;
     }).join('');
     if (selectedPhase) {
         setPhase(selectedPhase, false);
@@ -1361,7 +1371,7 @@ function updateDisplayCards(data) {
     });
     if (DOM.lastUpdate) {
         DOM.lastUpdate.textContent = 'Last update: ' + new Date().toLocaleTimeString('id-ID')
-            + (selectedPhase ? ` · ${selectedPhase}` : '');
+            + (selectedPhase ? ` · ${getPhaseShortBadge(selectedPhase)}` : '');
         DOM.lastUpdate.classList.add('online');
         DOM.lastUpdate.classList.remove('offline');
     }
@@ -4056,16 +4066,16 @@ function buildSessionUI(isAutoPoll = false) {
         if (session) {
             const devObj = _deviceListCache.find(d => d.id === (session.deviceId || selectedDeviceId));
             const frozenNames = session.phaseNames || {};
-            const recordedPhaseKeys = Object.keys(recordsBySession[sid] || {}).filter(k => /^L\d+$/.test(k));
-            const backendPhaseKeys = (session.phases || []).filter(k => /^L\d+$/.test(k));
-            const frozenPhaseKeys = Object.keys(frozenNames).filter(k => /^L\d+$/.test(k));
+            const recordedPhaseKeys = Object.keys(recordsBySession[sid] || {}).filter(k => _isValidPhaseKeyJS(k));
+            const backendPhaseKeys = (session.phases || []).filter(k => _isValidPhaseKeyJS(k));
+            const frozenPhaseKeys = Object.keys(frozenNames).filter(k => _isValidPhaseKeyJS(k));
             const allKeysSet = new Set([...recordedPhaseKeys, ...backendPhaseKeys, ...frozenPhaseKeys]);
             if (allKeysSet.size === 0 && devObj && devObj.phases) {
                 devObj.phases.filter(p => p.enabled !== false).forEach(p => allKeysSet.add(p.phase));
             }
-            const phaseSourceKeys = Array.from(allKeysSet).sort((a, b) => parseInt(a.slice(1)) - parseInt(b.slice(1)));
+            const phaseSourceKeys = Array.from(allKeysSet).sort(_phaseSortCompare);
             const phases = phaseSourceKeys.map(ph => {
-                const displayName = frozenNames[ph] || devObj?.phases?.find(p => p.phase === ph)?.name || ph;
+                const displayName = frozenNames[ph] || devObj?.phases?.find(p => p.phase === ph)?.name || getPhaseDefaultFullName(ph);
                 return { phase: ph, name: displayName };
             });
             session.computedPhases = phases;
@@ -4090,16 +4100,16 @@ function toggleSessionDetail(sessionId) {
         if (session) {
             const devObj = _deviceListCache.find(d => d.id === (session.deviceId || selectedDeviceId));
             const frozenNames = session.phaseNames || {};
-            const recordedPhaseKeys = Object.keys(recordsBySession[sessionId] || {}).filter(k => /^L\d+$/.test(k));
-            const backendPhaseKeys = (session.phases || []).filter(k => /^L\d+$/.test(k));
-            const frozenPhaseKeys = Object.keys(frozenNames).filter(k => /^L\d+$/.test(k));
+            const recordedPhaseKeys = Object.keys(recordsBySession[sessionId] || {}).filter(k => _isValidPhaseKeyJS(k));
+            const backendPhaseKeys = (session.phases || []).filter(k => _isValidPhaseKeyJS(k));
+            const frozenPhaseKeys = Object.keys(frozenNames).filter(k => _isValidPhaseKeyJS(k));
             const allKeysSet = new Set([...recordedPhaseKeys, ...backendPhaseKeys, ...frozenPhaseKeys]);
             if (allKeysSet.size === 0 && devObj && devObj.phases) {
                 devObj.phases.filter(p => p.enabled !== false).forEach(p => allKeysSet.add(p.phase));
             }
-            const phaseSourceKeys = Array.from(allKeysSet).sort((a, b) => parseInt(a.slice(1)) - parseInt(b.slice(1)));
+            const phaseSourceKeys = Array.from(allKeysSet).sort(_phaseSortCompare);
             const phases = phaseSourceKeys.map(ph => {
-                const displayName = frozenNames[ph] || devObj?.phases?.find(p => p.phase === ph)?.name || ph;
+                const displayName = frozenNames[ph] || devObj?.phases?.find(p => p.phase === ph)?.name || getPhaseDefaultFullName(ph);
                 return { phase: ph, name: displayName };
             });
             session.computedPhases = phases;
