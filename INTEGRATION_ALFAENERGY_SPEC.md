@@ -1,11 +1,11 @@
-# Spesifikasi & Dokumentasi Firmware AlfaEnergy (v1.2.9)
+# Spesifikasi & Dokumentasi Firmware AlfaEnergy (v1.3.0)
 
-Dokumen ini mencatat seluruh konfigurasi, arsitektur topik MQTT, payload schema, command, pinout hardware, dan OTA firmware ESP32 **AlfaEnergy v1.2.9** sebagai referensi pengembang.
+Dokumen ini mencatat seluruh konfigurasi, arsitektur topik MQTT, payload schema, command, pinout hardware, dan OTA firmware ESP32 **AlfaEnergy v1.3.0** sebagai referensi pengembang.
 
 ---
 
 ## 1. Identitas & Versi Firmware
-- **Versi Firmware**: `1.2.9`
+- **Versi Firmware**: `1.3.0`
 - **Prefix Root MQTT**: `AlfaEnergy`
 - **Format Device ID**: Alphanumeric + tanda hubung (contoh: `EM-0001`, `MC3`, `ESP32-01`).
 - **OTA Hostname**: `EnergyMeter-<DEVICE_ID>`
@@ -64,16 +64,18 @@ Data sensor dikirim jika ada perubahan nilai melebihi ambang batas berikut:
 ### A. Data Telemetri Sensor
 Format topik:
 ```text
-AlfaEnergy/<DEVICE_ID>/<MODE>/<SENSOR_NAME>
+AlfaEnergy/<DEVICE_ID>/<MODE>/...
 ```
 
-1. **Mode 3 Phase (3P)**:
+1. **Mode 3 Phase (3P)** *(4 Segmen)*:
    - `AlfaEnergy/<DEVICE_ID>/3P/R`
    - `AlfaEnergy/<DEVICE_ID>/3P/S`
    - `AlfaEnergy/<DEVICE_ID>/3P/T`
-2. **Mode 1 Phase (1P)**:
-   - `AlfaEnergy/<DEVICE_ID>/1P/<NamaBeban>`
-   - Contoh: `AlfaEnergy/EM-0001/1P/LampuUtama`, `AlfaEnergy/EM-0001/1P/AC_Server`
+2. **Mode 1 Phase (1P)** *(5 Segmen - v1.3.0)*:
+   - `AlfaEnergy/<DEVICE_ID>/1P/<LOAD_TYPE>/<UNIT_NUMBER>`
+   - Contoh: `AlfaEnergy/EM-0001/1P/LAMP/01`, `AlfaEnergy/EM-0001/1P/AC/01`, `AlfaEnergy/EM-0001/1P/REFRIGERATOR/02`
+   - **Load Types**: `AC`, `COOLER`, `LAMP`, `REFRIGERATOR`, `FREEZER`, `PUMP`, `MAIN`, `DISTRIBUTION`, `PRODUCTION`, `OTHER`
+   - **Unit Number**: `01` s/d `10`
 3. **Format Payload JSON**:
    ```json
    {"V":230.5,"A":1.427,"W":218.9,"Hz":50.00,"kWh":0.332,"pf":0.670}
@@ -86,7 +88,7 @@ AlfaEnergy/<DEVICE_ID>/<MODE>/<SENSOR_NAME>
 ### C. Status Perangkat (Published Retained)
 - `AlfaEnergy/<DEVICE_ID>/status/online` &rarr; `true`
 - `AlfaEnergy/<DEVICE_ID>/status/deviceID` &rarr; `<DEVICE_ID>`
-- `AlfaEnergy/<DEVICE_ID>/status/version` &rarr; `1.2.9`
+- `AlfaEnergy/<DEVICE_ID>/status/version` &rarr; `1.3.0`
 - `AlfaEnergy/<DEVICE_ID>/status/ip` &rarr; IP lokal ESP32 (misal `192.168.1.50`)
 - `AlfaEnergy/<DEVICE_ID>/status/activeChannels` &rarr; Jumlah channel aktif (misal `3`)
 - `AlfaEnergy/<DEVICE_ID>/status/channel` &rarr; `resetting` (saat reset dipicu)
@@ -122,4 +124,4 @@ AlfaEnergy/<DEVICE_ID>/<MODE>/<SENSOR_NAME>
   - Key `"id"`: Menyimpan Device ID.
 - **Namespace `"metercfg"`**:
   - Key `"count"`: Jumlah channel terkonfigurasi.
-  - Key `"c0_en"`, `"c0_addr"`, `"c0_mode"`, `"c0_phase"`, `"c0_load"`, `"c0_name"` (per channel $0..4$).
+  - Key `"c0_en"`, `"c0_addr"`, `"c0_mode"`, `"c0_phase"`, `"c0_load"`, `"c0_unit"` (per channel $0..4$).

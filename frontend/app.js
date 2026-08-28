@@ -201,6 +201,90 @@ const PHASE_STANDARD_COLORS = {
     'T': { line: '#3B82F6', bar: 'rgba(59,130,246,0.85)', light: 'rgba(59,130,246,0.15)' },  // Phase T: Blue
 };
 
+const LOAD_SHORT_BADGES = {
+    'AC': 'AC',
+    'COOLER': 'CL',
+    'LAMP': 'LP',
+    'REFRIGERATOR': 'RF',
+    'FREEZER': 'FZ',
+    'PUMP': 'PM',
+    'MAIN': 'MN',
+    'DISTRIBUTION': 'DB',
+    'PRODUCTION': 'PR',
+    'OTHER': 'OT'
+};
+
+const LOAD_FULL_NAMES = {
+    'AC': 'AC',
+    'COOLER': 'Cooler',
+    'LAMP': 'Lamp',
+    'REFRIGERATOR': 'Refrigerator',
+    'FREEZER': 'Freezer',
+    'PUMP': 'Pump',
+    'MAIN': 'Main Panel',
+    'DISTRIBUTION': 'Distribution',
+    'PRODUCTION': 'Production',
+    'OTHER': 'Other'
+};
+
+const LOAD_TYPE_COLORS = {
+    'AC': { line: '#0EA5E9', bar: 'rgba(14,165,233,0.85)', light: 'rgba(14,165,233,0.15)' },          // Sky Blue
+    'COOLER': { line: '#06B6D4', bar: 'rgba(6,182,212,0.85)', light: 'rgba(6,182,212,0.15)' },      // Cyan
+    'LAMP': { line: '#EAB308', bar: 'rgba(234,179,8,0.85)', light: 'rgba(234,179,8,0.15)' },         // Yellow
+    'REFRIGERATOR': { line: '#3B82F6', bar: 'rgba(59,130,246,0.85)', light: 'rgba(59,130,246,0.15)' },// Blue
+    'FREEZER': { line: '#6366F1', bar: 'rgba(99,102,241,0.85)', light: 'rgba(99,102,241,0.15)' },    // Indigo
+    'PUMP': { line: '#14B8A6', bar: 'rgba(20,184,166,0.85)', light: 'rgba(20,184,166,0.15)' },       // Teal
+    'MAIN': { line: '#DC2626', bar: 'rgba(220,38,38,0.85)', light: 'rgba(220,38,38,0.15)' },         // Red
+    'DISTRIBUTION': { line: '#8B5CF6', bar: 'rgba(139,92,246,0.85)', light: 'rgba(139,92,246,0.15)' },// Purple
+    'PRODUCTION': { line: '#F97316', bar: 'rgba(249,115,22,0.85)', light: 'rgba(249,115,22,0.15)' },  // Orange
+    'OTHER': { line: '#64748B', bar: 'rgba(100,116,139,0.85)', light: 'rgba(100,116,139,0.15)' }     // Slate
+};
+
+function getPhaseShortBadge(phase) {
+    if (!phase) return '';
+    const pUpper = String(phase).trim().toUpperCase();
+    if (pUpper === 'R' || pUpper === 'S' || pUpper === 'T') return pUpper;
+    if (/^L\d+$/i.test(pUpper)) return pUpper;
+    
+    // Check 1P load pattern e.g. LAMP_01, LAMP_1, LAMP-1
+    const m = pUpper.match(/^([A-Z]+)[_-]?(\d+)$/);
+    if (m) {
+        const type = m[1];
+        const num = parseInt(m[2], 10);
+        const shortCode = LOAD_SHORT_BADGES[type] || type.slice(0, 2);
+        return `${shortCode}-${num}`;
+    }
+    
+    if (LOAD_SHORT_BADGES[pUpper]) return LOAD_SHORT_BADGES[pUpper];
+    if (pUpper.length <= 4) return pUpper;
+    return pUpper.slice(0, 3);
+}
+
+function getPhaseDefaultFullName(phase) {
+    if (!phase) return '';
+    const pUpper = String(phase).trim().toUpperCase();
+    if (pUpper === 'R') return 'Phase R';
+    if (pUpper === 'S') return 'Phase S';
+    if (pUpper === 'T') return 'Phase T';
+    if (/^L\d+$/i.test(pUpper)) return `Sensor ${phase.slice(1)}`;
+    
+    const m = pUpper.match(/^([A-Z]+)[_-]?(\d+)$/);
+    if (m) {
+        const type = m[1];
+        const num = parseInt(m[2], 10);
+        const fullName = LOAD_FULL_NAMES[type] || (type.charAt(0) + type.slice(1).toLowerCase());
+        return `${fullName}-${num}`;
+    }
+    
+    return LOAD_FULL_NAMES[pUpper] || phase;
+}
+
+function getPhaseLabel(phase) {
+    const dev = _deviceListCache.find(d => d.id === selectedDeviceId);
+    const sensor = dev?.phases?.find(p => p.phase === phase);
+    return sensor?.name || getPhaseDefaultFullName(phase) || phase;
+}
+
 function hexToRgba(hex, alpha) {
     let c = (hex || '').replace('#', '');
     if (c.length === 3) c = c.split('').map(x => x + x).join('');
@@ -239,6 +323,12 @@ function getPhaseColors(phase) {
     const pUpper = (phase || '').toUpperCase();
     if (PHASE_STANDARD_COLORS[pUpper]) {
         return PHASE_STANDARD_COLORS[pUpper];
+    }
+
+    // Check 1P load type standard palette
+    const m = pUpper.match(/^([A-Z]+)[_-]?(\d+)?$/);
+    if (m && LOAD_TYPE_COLORS[m[1]]) {
+        return LOAD_TYPE_COLORS[m[1]];
     }
 
     if (/^L\d+$/i.test(phase)) {
@@ -2570,9 +2660,9 @@ function renderDeviceList(devices) {
                             onchange="togglePhaseEnabled('${d.id}','${p.phase}',this.checked)">
                         <span class="phase-toggle-track"></span>
                     </label>
-                    <div class="device-phase-badge" style="background:${phaseColor};${isEnabled ? '' : 'opacity:.4'}">${p.phase}</div>
+                    <div class="device-phase-badge" style="background:${phaseColor};${isEnabled ? '' : 'opacity:.4'}" title="Sensor ${p.phase}">${getPhaseShortBadge(p.phase)}</div>
                     <div class="device-phase-info">
-                        <p class="device-phase-name" id="phase-label_${d.id}_${p.phase}" style="${isEnabled ? '' : 'opacity:.45;text-decoration:line-through'}">${p.name || p.phase}</p>
+                        <p class="device-phase-name" id="phase-label_${d.id}_${p.phase}" style="${isEnabled ? '' : 'opacity:.45;text-decoration:line-through'}">${p.name || getPhaseDefaultFullName(p.phase)}</p>
                         <p class="device-phase-status">${statusHTML}</p>
                     </div>
                     <button class="sensor-color-picker" style="background:${phaseColor}"
@@ -2585,7 +2675,7 @@ function renderDeviceList(devices) {
                     <div class="device-phase-info">
                         <div class="device-phase-edit-field">
                             <input type="text" class="device-phase-rename-input" id="phase-rename_${d.id}_${p.phase}"
-                                value="${p.name || p.phase}" maxlength="40" autocomplete="off"
+                                value="${p.name || getPhaseDefaultFullName(p.phase)}" maxlength="40" autocomplete="off"
                                 onkeydown="if(event.key==='Enter') savePhaseRename('${d.id}','${p.phase}'); else if(event.key==='Escape') cancelRenamePhase('${d.id}','${p.phase}')">
                         </div>
                     </div>
@@ -3472,7 +3562,23 @@ function initMQTT() {
                     rawRealtimeData.Timestamp = payload;
                     _processIncomingMQTTData();
 
-                // Case 2: AlfaEnergy Mode 3P / 1P -> AlfaEnergy/EM-0001/3P/R, AlfaEnergy/EM-0001/1P/Lampu
+                // Case 2A: AlfaEnergy v1.3.0 1P -> AlfaEnergy/EM-0001/1P/LAMP/01 (5 parts)
+                } else if (parts.length === 5 && parts[2] === '1P') {
+                    const phase = `${parts[3]}_${parts[4]}`;
+                    _phaseLastSeen[phase] = Date.now();
+                    try {
+                        const data = JSON.parse(payload);
+                        if (!rawRealtimeData[phase]) rawRealtimeData[phase] = {};
+                        Object.entries(data).forEach(([k, v]) => {
+                            const mapped = _ESP32_JSON_MAP_JS[k] || k;
+                            rawRealtimeData[phase][mapped] = parseFloat(v) || 0;
+                        });
+                        _processIncomingMQTTData();
+                    } catch (parseErr) {
+                        console.error('[MQTT] JSON parse error:', parseErr);
+                    }
+
+                // Case 2B: AlfaEnergy Mode 3P / 1P -> AlfaEnergy/EM-0001/3P/R, AlfaEnergy/EM-0001/1P/Lampu
                 } else if (parts.length === 4 && (parts[2] === '3P' || parts[2] === '1P')) {
                     const phase = parts[3];
                     _phaseLastSeen[phase] = Date.now();

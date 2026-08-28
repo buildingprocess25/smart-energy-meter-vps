@@ -63,7 +63,23 @@ def _on_message(client, userdata, msg):
                     _mqtt_live_data[device_id]['status'] = {}
                 _mqtt_live_data[device_id]['status'][parts[3]] = payload
 
-            # Case 3: AlfaEnergy Mode 3P / 1P -> AlfaEnergy/EM-0001/3P/R, AlfaEnergy/EM-0001/3P/S, AlfaEnergy/EM-0001/1P/Lampu
+            # Case 3A: AlfaEnergy v1.3.0 1P -> AlfaEnergy/<DEVICE_ID>/1P/<LOAD_TYPE>/<UNIT_NUMBER> (5 parts)
+            elif len(parts) == 5 and parts[2] == '1P':
+                phase = f"{parts[3]}_{parts[4]}"
+                try:
+                    data = json.loads(payload)
+                    if phase not in _mqtt_live_data[device_id]:
+                        _mqtt_live_data[device_id][phase] = {}
+                    for k, v in data.items():
+                        mapped = _ESP32_JSON_MAP.get(k, k)
+                        try:
+                            _mqtt_live_data[device_id][phase][mapped] = float(v)
+                        except (TypeError, ValueError):
+                            pass
+                except (json.JSONDecodeError, Exception):
+                    pass
+
+            # Case 3B: AlfaEnergy Mode 3P / 1P -> AlfaEnergy/EM-0001/3P/R, AlfaEnergy/EM-0001/3P/S, AlfaEnergy/EM-0001/1P/Lampu
             elif len(parts) == 4 and parts[2] in ('3P', '1P'):
                 phase = parts[3]
                 try:
@@ -160,18 +176,41 @@ _PHASE_RE = re.compile(r'^L\d+$')
 _PHASE_ORDER = {'R': 1, 'S': 2, 'T': 3}
 _NON_PHASE_KEYS = {'Timestamp', 'timestamp', 'meta', 'offline', 'status', 'cmd', 'realtime', 'RealTime'}
 
+def _get_default_sensor_display_name(phase: str) -> str:
+    if not phase:
+        return ''
+    up = phase.upper()
+    if up in ('R', 'S', 'T'):
+        return f'Phase {up}'
+    if _PHASE_RE.match(phase):
+        return f'Sensor {phase[1:]}'
+    m = re.match(r'^([A-Za-z]+)[_-]?(\d+)$', phase)
+    if m:
+        t, n = m.group(1).upper(), int(m.group(2))
+        prefix_map = {
+            'AC': 'AC', 'COOLER': 'Cooler', 'LAMP': 'Lamp', 'REFRIGERATOR': 'Refrigerator',
+            'FREEZER': 'Freezer', 'PUMP': 'Pump', 'MAIN': 'Main Panel',
+            'DISTRIBUTION': 'Distribution', 'PRODUCTION': 'Production', 'OTHER': 'Other'
+        }
+        clean_type = prefix_map.get(t, t.capitalize())
+        return f'{clean_type}-{n}'
+    return phase
+
 def _phase_sort_key(p: str):
     if not p:
-        return (99, 0, '')
+        return (99, '', 0, '')
     up = p.upper()
     if up in _PHASE_ORDER:
-        return (0, _PHASE_ORDER[up], p)
+        return (0, '', _PHASE_ORDER[up], p)
     if _PHASE_RE.match(p):
         try:
-            return (1, int(p[1:]), p)
+            return (1, '', int(p[1:]), p)
         except ValueError:
-            return (1, 999, p)
-    return (2, 0, p)
+            return (1, '', 999, p)
+    m = re.match(r'^([A-Za-z]+)[_-]?(\d+)$', up)
+    if m:
+        return (2, m.group(1), int(m.group(2)), p)
+    return (3, p, 0, p)
 
 def _is_valid_phase_key(k: str) -> bool:
     if not k or not isinstance(k, str):
@@ -288,6 +327,12 @@ def init_db():
                     ]
                     for tbl, col, col_def in columns_to_add:
                         cur.execute(f"ALTER TABLE {tbl} ADD COLUMN IF NOT EXISTS {col} {col_def};")
+
+                    try:
+                        cur.execute("ALTER TABLE telemetry ALTER COLUMN phase TYPE VARCHAR(50);")
+                        cur.execute("ALTER TABLE history ALTER COLUMN phase TYPE VARCHAR(50);")
+                    except Exception as pe:
+                        print(f"[init_db] Note altering phase columns: {pe}")
 
                     def create_index_safe(idx_name, create_sql):
                         try:
@@ -968,7 +1013,7 @@ def list_devices():
             phases = []
             if isinstance(raw, dict):
                 for ph in sorted([k for k in raw if _is_valid_phase_key(k) and isinstance(raw.get(k), dict)], key=_phase_sort_key):
-                    disp_name = f'Phase {ph}' if ph in ('R', 'S', 'T') else (f'Sensor {ph[1:]}' if _PHASE_RE.match(ph) else ph)
+                    disp_name = _get_default_sensor_display_name(ph)
                     phases.append({'phase': ph, 'name': disp_name, 'enabled': True})
             devices.append({
                 'id': did,
@@ -1000,7 +1045,7 @@ def list_devices():
                 added = False
                 for ph in live_detected:
                     if ph.lower() not in existing_phases:
-                        disp_name = f'Phase {ph}' if ph in ('R', 'S', 'T') else (f'Sensor {ph[1:]}' if _PHASE_RE.match(ph) else ph)
+                        disp_name = _get_default_sensor_display_name(ph)
                         sensors_list.append({
                             'phase': ph,
                             'name': disp_name,
@@ -1020,7 +1065,7 @@ def list_devices():
             for s in sorted(sensors_list, key=lambda item: _phase_sort_key(item.get('phase', ''))):
                 phases.append({
                     'phase': s.get('phase'),
-                    'name': s.get('name', s.get('phase')),
+                    'name': s.get('name', _get_default_sensor_display_name(s.get('phase', ''))),
                     'properties': s.get('properties', []),
                     'enabled': s.get('enabled', True),
                     'color': s.get('color', None)
@@ -1058,7 +1103,7 @@ def init_device_sensors(device_id: str):
             added = 0
             for ph in detected:
                 if ph not in existing_phases:
-                    disp_name = f'Phase {ph}' if ph in ('R', 'S', 'T') else (f'Sensor {ph[1:]}' if _PHASE_RE.match(ph) else ph)
+                    disp_name = _get_default_sensor_display_name(ph)
                     current_sensors.append({
                         'phase': ph,
                         'name': disp_name,
