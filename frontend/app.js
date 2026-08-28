@@ -963,24 +963,18 @@ function updatePhaseSelector(phases) {
     container.innerHTML = enabledPhases.map(p => {
         const phaseObj = dev?.phases?.find(ph => ph.phase === p);
         const shortBadge = getPhaseShortBadge(p);
-        const fullName = phaseObj?.name || getPhaseDefaultFullName(p);
+        const customOrFullName = phaseObj?.name || getPhaseDefaultFullName(p);
         const isStandard3P = ['R', 'S', 'T'].includes(p.toUpperCase());
         
-        let label = '';
+        let subText = '';
         if (isStandard3P) {
-            if (phaseObj?.name && phaseObj.name !== p && phaseObj.name !== `Phase ${p.toUpperCase()}`) {
-                label = `${p.toUpperCase()} <span class="phase-btn-sub">${phaseObj.name}</span>`;
-            } else {
-                label = `Phase ${p.toUpperCase()}`;
-            }
+            subText = (phaseObj?.name && phaseObj.name !== p) ? phaseObj.name : `Phase ${p.toUpperCase()}`;
         } else {
-            if (fullName && fullName !== shortBadge) {
-                label = `${shortBadge} <span class="phase-btn-sub">${fullName}</span>`;
-            } else {
-                label = shortBadge;
-            }
+            subText = customOrFullName;
         }
-        return `<button class="phase-btn${selectedPhase === p ? ' active' : ''}" data-phase="${p}" onclick="setPhase('${p}')" title="${fullName} (${p})">${label}</button>`;
+        
+        const label = `<span class="phase-btn-badge">${shortBadge}</span><span class="phase-btn-sub" title="${subText}">${subText}</span>`;
+        return `<button class="phase-btn${selectedPhase === p ? ' active' : ''}" data-phase="${p}" onclick="setPhase('${p}')" title="${customOrFullName} (${p})">${label}</button>`;
     }).join('');
     if (selectedPhase) {
         setPhase(selectedPhase, false);

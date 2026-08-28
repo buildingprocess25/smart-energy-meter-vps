@@ -469,33 +469,53 @@ body {
     animation: spin-dot 0.8s linear infinite;
 }
 .last-update.online::before { width: 6px; height: 6px; margin-right: 0; background: var(--green); box-shadow: 0 0 0 2px rgba(40,167,69,0.2), 0 0 6px rgba(40,167,69,0.5); animation: none; border: none; }
-.dashboard-grid { display: grid; grid-template-columns: 268px 1fr; gap: 14px; flex: 1; min-height: 0; }
+.dashboard-grid { display: grid; grid-template-columns: 280px 1fr; gap: 14px; flex: 1; min-height: 0; }
 .metrics-col-wrap { display: flex; flex-direction: column; gap: 8px; min-height: 0; height: 100%; }
 .phase-selector { flex-shrink: 0; }
 .phase-btn-group {
-    display: flex; gap: 4px;
+    display: flex; gap: 3px;
     background: var(--surface); border: 1px solid var(--border);
     border-radius: var(--radius-md) 0 var(--radius-md) 0;
-    padding: 5px; flex-wrap: wrap;
+    padding: 4px; flex-wrap: nowrap;
     box-shadow: var(--shadow-xs);
 }
 .phase-btn {
-    flex: 1; min-width: 0; padding: 7px 8px;
+    flex: 1; min-width: 0; padding: 5px 2px;
     border: 1.5px solid transparent;
-    border-radius: .5rem 0 .5rem 0;
+    border-radius: .4rem 0 .4rem 0;
     background: transparent; color: var(--text-secondary);
-    font-family: var(--font-ui); font-size: 11px; font-weight: 800;
-    letter-spacing: 0.3px; cursor: pointer; text-align: center;
-    white-space: nowrap; transition: all var(--transition); line-height: 1.2;
-    text-transform: uppercase;
+    font-family: var(--font-ui); cursor: pointer; text-align: center;
+    transition: all var(--transition);
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
 }
 .phase-btn:hover { background: var(--brand-muted); color: var(--brand); border-color: rgba(187,23,36,0.15); }
 .phase-btn.active {
     background: var(--brand); color: #fff; border-color: var(--brand);
     box-shadow: 0 2px 8px rgba(187,23,36,0.28), 0 1px 3px rgba(187,23,36,0.2);
 }
-.phase-btn .phase-btn-sub { display: block; font-size: 9px; font-weight: 600; opacity: 0.75; margin-top: 1px; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
-.phase-btn.active .phase-btn-sub { opacity: 0.82; }
+.phase-btn-badge {
+    display: block;
+    font-size: 11px;
+    font-weight: 800;
+    line-height: 1.1;
+    letter-spacing: 0.2px;
+    text-transform: uppercase;
+}
+.phase-btn .phase-btn-sub {
+    display: block;
+    font-size: 8px;
+    font-weight: 600;
+    opacity: 0.78;
+    margin-top: 1.5px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 100%;
+    line-height: 1;
+    text-transform: none;
+    letter-spacing: -0.2px;
+}
+.phase-btn.active .phase-btn-sub { opacity: 0.92; }
 .metrics-column {
     display: grid;
     grid-template-columns: 1fr 1fr;
