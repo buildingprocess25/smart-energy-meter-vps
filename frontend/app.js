@@ -4686,24 +4686,32 @@ async function exportSession(sessionId, sessionName, event) {
     try {
         // Ensure all phase data is loaded before exporting
         const sessionMeta = sessionsData[sessionId];
-        if (sessionMeta) {
-            const phaseNames = sessionMeta.phaseNames || {};
-            const phases = Object.keys(phaseNames).filter(k => /^L\d+$/.test(k));
-            if (!recordsBySession[sessionId]) recordsBySession[sessionId] = {};
+        const targetDev = sessionMeta?.deviceId || selectedDeviceId || 'all';
+        let phases = [];
+        if (sessionMeta?.phases && Array.isArray(sessionMeta.phases) && sessionMeta.phases.length > 0) {
+            phases = sessionMeta.phases.filter(k => /^L\d+$/i.test(k));
+        } else if (sessionMeta?.phaseNames && typeof sessionMeta.phaseNames === 'object') {
+            phases = Object.keys(sessionMeta.phaseNames).filter(k => /^L\d+$/i.test(k));
+        }
+        if (!phases.length) {
+            phases = ['L1', 'L2', 'L3'];
+        }
 
-            let needsFetch = false;
-            for (const ph of phases) {
-                if (!recordsBySession[sessionId][ph]) {
-                    needsFetch = true;
-                    break;
-                }
+        if (!recordsBySession[sessionId]) recordsBySession[sessionId] = {};
+
+        let needsFetch = false;
+        for (const ph of phases) {
+            if (!recordsBySession[sessionId][ph] || recordsBySession[sessionId][ph].length === 0) {
+                needsFetch = true;
+                break;
             }
+        }
 
-            if (needsFetch) {
-                await Promise.all(phases.map(async (ph) => {
-                    if (!recordsBySession[sessionId][ph]) {
-                        const res = await fetch(`/api/devices/${selectedDeviceId}/history/${sessionId}/${ph}`);
-                        if (!res.ok) throw new Error(`HTTP ${res.status} gagal memuat data sensor ${ph}`);
+        if (needsFetch) {
+            await Promise.all(phases.map(async (ph) => {
+                try {
+                    const res = await fetch(`/api/devices/${encodeURIComponent(targetDev)}/history/${encodeURIComponent(sessionId)}/${encodeURIComponent(ph)}`);
+                    if (res.ok) {
                         const historyMap = await res.json();
                         const arr = [];
                         Object.entries(historyMap).forEach(([key, val]) => {
@@ -4711,13 +4719,15 @@ async function exportSession(sessionId, sessionName, event) {
                         });
                         recordsBySession[sessionId][ph] = arr;
                     }
-                }));
-                buildSessionUI(); // Refresh UI to show the fetched records
-            }
+                } catch (err) {
+                    console.warn(`Gagal memuat phase ${ph} untuk export:`, err);
+                }
+            }));
+            buildSessionUI(); // Refresh UI to show the fetched records
         }
 
         const phaseData = recordsBySession[sessionId] || {};
-        const phaseKeys = Object.keys(phaseData).filter(k => /^L\d+$/.test(k)).sort((a, b) => parseInt(a.slice(1)) - parseInt(b.slice(1)));
+        const phaseKeys = Object.keys(phaseData).filter(k => /^L\d+$/i.test(k) && (phaseData[k]?.length || 0) > 0).sort((a, b) => parseInt(a.slice(1)) - parseInt(b.slice(1)));
         const totalRecords = phaseKeys.reduce((s, ph) => s + (phaseData[ph]?.length || 0), 0);
         if (!phaseKeys.length || totalRecords === 0) { 
             await showModal('Tidak Ada Data', `Sesi "${sessionName}" belum memiliki record.`, 'warning'); 
@@ -4728,11 +4738,11 @@ async function exportSession(sessionId, sessionName, event) {
             `Unduh ${totalRecords.toLocaleString('id-ID')} record (${phaseKeys.length} sensor) dari sesi:\n"${sessionName}"?\n\nProses ini hanya mengunduh berkas Excel dan tidak akan mengubah atau menghapus data di database.`, 'info', ['confirm']);
         if (!confirmed) return;
 
-        const session = sessionsData[sessionId];
-        const deviceName = session?.deviceName || _deviceListCache.find(d => d.id === (session?.deviceId || selectedDeviceId))?.name || selectedDeviceId;
+        const session = sessionsData[sessionId] || {};
+        const deviceName = session?.deviceName || _deviceListCache.find(d => d.id === (session?.deviceId || targetDev))?.name || targetDev;
         const wb = XLSX.utils.book_new();
         const frozenNames = session.phaseNames || {};
-        const devObj = _deviceListCache.find(d => d.id === (session?.deviceId || selectedDeviceId));
+        const devObj = _deviceListCache.find(d => d.id === (session?.deviceId || targetDev));
         for (const phase of phaseKeys) {
             const phaseRecs = (phaseData[phase] || []).slice().sort(sortByEpochAsc);
             const cachedName = devObj?.phases?.find(p => p.phase === phase)?.name;
@@ -4785,25 +4795,33 @@ async function backupSessionJSON(sessionId, sessionName, event) {
     try {
         // Ensure all phase data is loaded before backing up
         const sessionMeta = sessionsData[sessionId];
-        if (sessionMeta) {
-            const phaseNames = sessionMeta.phaseNames || {};
-            const phases = Object.keys(phaseNames).filter(k => /^L\d+$/.test(k));
-            if (!recordsBySession[sessionId]) recordsBySession[sessionId] = {};
+        const targetDev = sessionMeta?.deviceId || selectedDeviceId || 'all';
+        let phases = [];
+        if (sessionMeta?.phases && Array.isArray(sessionMeta.phases) && sessionMeta.phases.length > 0) {
+            phases = sessionMeta.phases.filter(k => /^L\d+$/i.test(k));
+        } else if (sessionMeta?.phaseNames && typeof sessionMeta.phaseNames === 'object') {
+            phases = Object.keys(sessionMeta.phaseNames).filter(k => /^L\d+$/i.test(k));
+        }
+        if (!phases.length) {
+            phases = ['L1', 'L2', 'L3'];
+        }
 
-            let needsFetch = false;
-            for (const ph of phases) {
-                if (!recordsBySession[sessionId][ph]) {
-                    needsFetch = true;
-                    break;
-                }
+        if (!recordsBySession[sessionId]) recordsBySession[sessionId] = {};
+
+        let needsFetch = false;
+        for (const ph of phases) {
+            if (!recordsBySession[sessionId][ph] || recordsBySession[sessionId][ph].length === 0) {
+                needsFetch = true;
+                break;
             }
+        }
 
-            if (needsFetch) {
-                showGlobalLoader();
-                await Promise.all(phases.map(async (ph) => {
-                    if (!recordsBySession[sessionId][ph]) {
-                        const res = await fetch(`/api/devices/${selectedDeviceId}/history/${sessionId}/${ph}`);
-                        if (!res.ok) throw new Error(`HTTP ${res.status} gagal memuat data sensor ${ph}`);
+        if (needsFetch) {
+            showGlobalLoader();
+            await Promise.all(phases.map(async (ph) => {
+                try {
+                    const res = await fetch(`/api/devices/${encodeURIComponent(targetDev)}/history/${encodeURIComponent(sessionId)}/${encodeURIComponent(ph)}`);
+                    if (res.ok) {
                         const historyMap = await res.json();
                         const arr = [];
                         Object.entries(historyMap).forEach(([key, val]) => {
@@ -4811,14 +4829,16 @@ async function backupSessionJSON(sessionId, sessionName, event) {
                         });
                         recordsBySession[sessionId][ph] = arr;
                     }
-                }));
-                hideGlobalLoader();
-                buildSessionUI();
-            }
+                } catch (err) {
+                    console.warn(`Gagal memuat phase ${ph} untuk JSON backup:`, err);
+                }
+            }));
+            hideGlobalLoader();
+            buildSessionUI();
         }
 
         const phaseData = recordsBySession[sessionId] || {};
-        const phaseKeys = Object.keys(phaseData).filter(k => /^L\d+$/.test(k)).sort((a, b) => parseInt(a.slice(1)) - parseInt(b.slice(1)));
+        const phaseKeys = Object.keys(phaseData).filter(k => /^L\d+$/i.test(k) && (phaseData[k]?.length || 0) > 0).sort((a, b) => parseInt(a.slice(1)) - parseInt(b.slice(1)));
         const totalRecords = phaseKeys.reduce((s, ph) => s + (phaseData[ph]?.length || 0), 0);
         if (!phaseKeys.length || totalRecords === 0) { 
             await showModal('Tidak Ada Data', `Sesi "${sessionName}" belum memiliki record.`, 'warning'); 
@@ -4837,7 +4857,7 @@ async function backupSessionJSON(sessionId, sessionName, event) {
             session: {
                 id: sessionId,
                 name: sessionName,
-                deviceId: sessionMeta?.deviceId || selectedDeviceId,
+                deviceId: sessionMeta?.deviceId || targetDev,
                 deviceName: sessionMeta?.deviceName || selectedDeviceName,
                 startTime: sessionMeta?.startTime || '---',
                 endTime: sessionMeta?.endTime || '---',
