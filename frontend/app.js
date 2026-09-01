@@ -3974,14 +3974,25 @@ function buildSessionUI(isAutoPoll = false) {
         let actionBtns = '';
         if (isActive) {
             actionBtns += `
+            <button class="session-export-btn" onclick="exportSession('${session.id}','${_escapeAttr(session.name)}',event)" title="Export Excel (Data Sementara)">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+            </button>
             <div class="session-dropdown-wrap" onclick="event.stopPropagation()">
                 <button class="session-more-btn" onclick="toggleSessionDropdown('${session.id}', event)" title="Menu Aksi">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="5" r="1.5"></circle><circle cx="12" cy="12" r="1.5"></circle><circle cx="12" cy="19" r="1.5"></circle></svg>
                 </button>
                 <div class="session-dropdown-menu" id="dropdown_${session.id}">
+                    <button class="session-dropdown-item" onclick="openRenameModal('${session.id}','${_escapeAttr(session.name)}',event)">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path></svg>
+                        Rename Sesi
+                    </button>
                     <button class="session-dropdown-item" onclick="openChangeTimeModal('${session.id}','${session.startTime}','${_escapeAttr(session.name)}',event)">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>
                         Ubah Waktu
+                    </button>
+                    <button class="session-dropdown-item" onclick="backupSessionJSON('${session.id}','${_escapeAttr(session.name)}',event)">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg>
+                        Backup JSON (Data Sementara)
                     </button>
                 </div>
             </div>`;
@@ -4687,23 +4698,26 @@ async function exportSession(sessionId, sessionName, event) {
         // Ensure all phase data is loaded before exporting
         const sessionMeta = sessionsData[sessionId];
         const targetDev = sessionMeta?.deviceId || selectedDeviceId || 'all';
+        const isSessionActive = (sessionId === currentSessionId && captureActive);
         let phases = [];
         if (sessionMeta?.phases && Array.isArray(sessionMeta.phases) && sessionMeta.phases.length > 0) {
-            phases = sessionMeta.phases.filter(k => /^L\d+$/i.test(k));
+            phases = sessionMeta.phases.filter(k => _isValidPhaseKeyJS(k));
         } else if (sessionMeta?.phaseNames && typeof sessionMeta.phaseNames === 'object') {
-            phases = Object.keys(sessionMeta.phaseNames).filter(k => /^L\d+$/i.test(k));
+            phases = Object.keys(sessionMeta.phaseNames).filter(k => _isValidPhaseKeyJS(k));
         }
         if (!phases.length) {
-            phases = ['L1', 'L2', 'L3'];
+            phases = ['R', 'S', 'T', 'L1', 'L2', 'L3'];
         }
 
         if (!recordsBySession[sessionId]) recordsBySession[sessionId] = {};
 
-        let needsFetch = false;
-        for (const ph of phases) {
-            if (!recordsBySession[sessionId][ph] || recordsBySession[sessionId][ph].length === 0) {
-                needsFetch = true;
-                break;
+        let needsFetch = isSessionActive;
+        if (!needsFetch) {
+            for (const ph of phases) {
+                if (!recordsBySession[sessionId][ph] || recordsBySession[sessionId][ph].length === 0) {
+                    needsFetch = true;
+                    break;
+                }
             }
         }
 
@@ -4727,15 +4741,15 @@ async function exportSession(sessionId, sessionName, event) {
         }
 
         const phaseData = recordsBySession[sessionId] || {};
-        const phaseKeys = Object.keys(phaseData).filter(k => /^L\d+$/i.test(k) && (phaseData[k]?.length || 0) > 0).sort((a, b) => parseInt(a.slice(1)) - parseInt(b.slice(1)));
+        const phaseKeys = Object.keys(phaseData).filter(k => _isValidPhaseKeyJS(k) && (phaseData[k]?.length || 0) > 0).sort(_phaseSortCompare);
         const totalRecords = phaseKeys.reduce((s, ph) => s + (phaseData[ph]?.length || 0), 0);
         if (!phaseKeys.length || totalRecords === 0) { 
-            await showModal('Tidak Ada Data', `Sesi "${sessionName}" belum memiliki record.`, 'warning'); 
+            await showModal('Tidak Ada Data', `Sesi "${sessionName}" belum memiliki record tersimpan di database. Pastikan alat sedang aktif mengirimkan data.`, 'warning'); 
             return; 
         }
 
         const confirmed = await showModal('Ekspor Data Sesi ke Excel',
-            `Unduh ${totalRecords.toLocaleString('id-ID')} record (${phaseKeys.length} sensor) dari sesi:\n"${sessionName}"?\n\nProses ini hanya mengunduh berkas Excel dan tidak akan mengubah atau menghapus data di database.`, 'info', ['confirm']);
+            `Unduh ${totalRecords.toLocaleString('id-ID')} record (${phaseKeys.length} sensor) dari sesi:\n"${sessionName}"${isSessionActive ? ' (Sedang Berjalan / Live)' : ''}?\n\nProses ini hanya mengunduh data yang sudah masuk sejauh ini dan tidak akan mengganggu rekaman yang sedang berjalan.`, 'info', ['confirm']);
         if (!confirmed) return;
 
         const session = sessionsData[sessionId] || {};
@@ -4757,12 +4771,12 @@ async function exportSession(sessionId, sessionName, event) {
         const sum = f => onlineRows.reduce((s, e) => s + (e[f] || 0), 0);
         const wsMeta = XLSX.utils.aoa_to_sheet([
             ['Smart Energy Monitor - Session Export'], [''],
-            ['Nama Sesi', sessionName], ['Export Date', new Date().toLocaleString('id-ID')],
+            ['Nama Sesi', sessionName + (isSessionActive ? ' (Sedang Berlangsung)' : '')], ['Export Date', new Date().toLocaleString('id-ID')],
             ['Device Name', deviceName], ['Sensors', phaseKeys.map(ph => {
                 const cachedName = devObj?.phases?.find(p => p.phase === ph)?.name;
                 return (frozenNames[ph] && frozenNames[ph] !== ph) ? frozenNames[ph] : (cachedName || ph);
             }).join(', ')],
-            ['Waktu Mulai', session?.startTime || '---'], ['Waktu Selesai', session?.endTime || 'Berlangsung'],
+            ['Waktu Mulai', session?.startTime || '---'], ['Waktu Selesai', session?.endTime || (isSessionActive ? 'Sedang Berlangsung (Snapshot)' : '---')],
             ['Total Records', totalRecords], ['Records Online', onlineRows.length], ['Records Offline', allRecords.length - onlineRows.length], [''],
             ['Summary Statistics (semua sensor, online saja)'], [''],
             ['Parameter', 'Rata-rata', 'Satuan'],
@@ -4775,7 +4789,7 @@ async function exportSession(sessionId, sessionName, event) {
         ]);
         wsMeta['!cols'] = [{ wch: 28 }, { wch: 28 }, { wch: 10 }];
         XLSX.utils.book_append_sheet(wb, wsMeta, 'Summary');
-        XLSX.writeFile(wb, `${sessionName.replace(/[\\/:*?"<>|]/g, '_')}.xlsx`);
+        XLSX.writeFile(wb, `${sessionName.replace(/[\\/:*?"<>|]/g, '_')}${isSessionActive ? '_live' : ''}.xlsx`);
         await showModal('Export Berhasil!', `${totalRecords} record dari "${sessionName}" berhasil diekspor.`, 'success');
     } catch (e) {
         await showModal('Export Gagal', 'Error: ' + e.message, 'error');
@@ -4796,23 +4810,26 @@ async function backupSessionJSON(sessionId, sessionName, event) {
         // Ensure all phase data is loaded before backing up
         const sessionMeta = sessionsData[sessionId];
         const targetDev = sessionMeta?.deviceId || selectedDeviceId || 'all';
+        const isSessionActive = (sessionId === currentSessionId && captureActive);
         let phases = [];
         if (sessionMeta?.phases && Array.isArray(sessionMeta.phases) && sessionMeta.phases.length > 0) {
-            phases = sessionMeta.phases.filter(k => /^L\d+$/i.test(k));
+            phases = sessionMeta.phases.filter(k => _isValidPhaseKeyJS(k));
         } else if (sessionMeta?.phaseNames && typeof sessionMeta.phaseNames === 'object') {
-            phases = Object.keys(sessionMeta.phaseNames).filter(k => /^L\d+$/i.test(k));
+            phases = Object.keys(sessionMeta.phaseNames).filter(k => _isValidPhaseKeyJS(k));
         }
         if (!phases.length) {
-            phases = ['L1', 'L2', 'L3'];
+            phases = ['R', 'S', 'T', 'L1', 'L2', 'L3'];
         }
 
         if (!recordsBySession[sessionId]) recordsBySession[sessionId] = {};
 
-        let needsFetch = false;
-        for (const ph of phases) {
-            if (!recordsBySession[sessionId][ph] || recordsBySession[sessionId][ph].length === 0) {
-                needsFetch = true;
-                break;
+        let needsFetch = isSessionActive;
+        if (!needsFetch) {
+            for (const ph of phases) {
+                if (!recordsBySession[sessionId][ph] || recordsBySession[sessionId][ph].length === 0) {
+                    needsFetch = true;
+                    break;
+                }
             }
         }
 
@@ -4838,15 +4855,15 @@ async function backupSessionJSON(sessionId, sessionName, event) {
         }
 
         const phaseData = recordsBySession[sessionId] || {};
-        const phaseKeys = Object.keys(phaseData).filter(k => /^L\d+$/i.test(k) && (phaseData[k]?.length || 0) > 0).sort((a, b) => parseInt(a.slice(1)) - parseInt(b.slice(1)));
+        const phaseKeys = Object.keys(phaseData).filter(k => _isValidPhaseKeyJS(k) && (phaseData[k]?.length || 0) > 0).sort(_phaseSortCompare);
         const totalRecords = phaseKeys.reduce((s, ph) => s + (phaseData[ph]?.length || 0), 0);
         if (!phaseKeys.length || totalRecords === 0) { 
-            await showModal('Tidak Ada Data', `Sesi "${sessionName}" belum memiliki record.`, 'warning'); 
+            await showModal('Tidak Ada Data', `Sesi "${sessionName}" belum memiliki record tersimpan di database. Pastikan alat sedang aktif mengirimkan data.`, 'warning'); 
             return; 
         }
 
         const confirmed = await showModal('Unduh Backup JSON Sesi',
-            `Unduh berkas cadangan ${totalRecords.toLocaleString('id-ID')} record (${phaseKeys.length} sensor) dari sesi:\n"${sessionName}"?\n\nBerkas ini dapat Anda simpan dan dibuka kembali kapan saja lewat menu Visualisasi Data.`, 'info', ['confirm']);
+            `Unduh berkas cadangan ${totalRecords.toLocaleString('id-ID')} record (${phaseKeys.length} sensor) dari sesi:\n"${sessionName}"${isSessionActive ? ' (Sedang Berjalan / Live)' : ''}?\n\nBerkas ini dapat Anda simpan dan dibuka kembali kapan saja lewat menu Visualisasi Data tanpa menghentikan rekaman.`, 'info', ['confirm']);
         if (!confirmed) return;
 
         // Construct standard backup schema
@@ -4860,7 +4877,7 @@ async function backupSessionJSON(sessionId, sessionName, event) {
                 deviceId: sessionMeta?.deviceId || targetDev,
                 deviceName: sessionMeta?.deviceName || selectedDeviceName,
                 startTime: sessionMeta?.startTime || '---',
-                endTime: sessionMeta?.endTime || '---',
+                endTime: sessionMeta?.endTime || (isSessionActive ? 'Sedang Berlangsung (Snapshot)' : '---'),
                 recordCount: totalRecords,
                 phaseNames: sessionMeta?.phaseNames || {}
             },
@@ -4872,7 +4889,7 @@ async function backupSessionJSON(sessionId, sessionName, event) {
         const url = URL.createObjectURL(blob);
         const a = document.createElement("a");
         a.href = url;
-        a.download = `${sessionName.replace(/[\\/:*?"<>|]/g, '_')}_backup.json`;
+        a.download = `${sessionName.replace(/[\\/:*?"<>|]/g, '_')}${isSessionActive ? '_live' : ''}_backup.json`;
         document.body.appendChild(a);
         a.click();
         document.body.removeChild(a);

@@ -813,7 +813,13 @@ def _do_capture_io(device_id, session_id, sched_ts, interval, last_hash, last_ch
             dev_name = cstate.get('device_name') or device_id
             store_id = cstate.get('store_id')
             
-        phases = enabled_phases if enabled_phases else sorted([k for k in (raw or {}) if _PHASE_RE.match(k)], key=lambda x: int(x[1:]))
+        if enabled_phases:
+            phases = enabled_phases
+        else:
+            phases = sorted(
+                [k for k in (raw or {}) if isinstance((raw or {}).get(k), dict) and k not in ('status', 'Timestamp', '_meta', 'cmd', 'realtime', 'RealTime')],
+                key=lambda x: int(x[1:]) if _PHASE_RE.match(x) else 99
+            )
         if not phases: return
         
         insert_rows = []
