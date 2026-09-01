@@ -5191,7 +5191,16 @@ async function confirmRenameSession() {
 async function confirmStartCapture() {
     const sessionName = $('sessionNameInput')?.value.trim()
         || `Rekaman ${new Date().toLocaleTimeString('id-ID')}`;
-    const intervalSec = Math.round(captureInterval / 1000) || 3;
+    
+    // Baca interval aktual dari input form atau fallback ke variable
+    let intervalSec = Math.round(captureInterval / 1000) || 15;
+    const inputVal = parseInt($('intervalInput')?.value);
+    const unitVal = parseInt($('intervalUnit')?.value) || 1;
+    if (!isNaN(inputVal) && inputVal > 0) {
+        intervalSec = Math.max(15, inputVal * unitVal);
+        captureInterval = intervalSec * 1000;
+    }
+
     closeSessionNameModal();
     const activeDev = _deviceListCache.find(d => d.id === selectedDeviceId);
     const phasesHint = (activeDev?.phases || []).filter(p => p.enabled !== false).map(p => p.phase);
@@ -5359,21 +5368,26 @@ async function deleteSession(sessionId, sessionName, event) {
 
 async function setCaptureInterval() {
     const val = parseInt($('intervalInput')?.value);
-    const multiplier = parseInt($('intervalUnit')?.value);
+    const multiplier = parseInt($('intervalUnit')?.value) || 1;
     const totalSec = val * multiplier;
-    if (isNaN(totalSec) || totalSec < 15) { await showModal('Input Tidak Valid', 'Interval minimal adalah 15 detik!', 'warning'); return; }
+    if (isNaN(totalSec) || totalSec < 15) { 
+        await showModal('Input Tidak Valid', 'Interval minimal adalah 15 detik!', 'warning'); 
+        return; 
+    }
     captureInterval = totalSec * 1000;
     _intervalUserEdited = true;
     const unitLabel = $('intervalUnit')?.options[$('intervalUnit').selectedIndex]?.text.toLowerCase() || 'seconds';
-    if (DOM.intervalDisplay) DOM.intervalDisplay.textContent = multiplier === 1 ? `Current: ${val} seconds` : `Current: ${val} ${unitLabel} (${totalSec}s)`;
+    if (DOM.intervalDisplay) {
+        DOM.intervalDisplay.textContent = multiplier === 1 ? `Current: ${val} seconds` : `Current: ${val} ${unitLabel} (${totalSec}s)`;
+    }
     try {
         await fetch('/api/capture/interval', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ interval: totalSec }),
+            body: JSON.stringify({ interval: totalSec, deviceId: selectedDeviceId }),
         });
     } catch (e) { }
-    await showModal('Interval Diperbarui', `Interval diubah menjadi ${val} ${unitLabel}.`, 'success');
+    await showModal('Interval Diperbarui', `Interval rekaman diubah menjadi ${val} ${unitLabel} (${totalSec}s).`, 'success');
 }
 
 // ==========================================

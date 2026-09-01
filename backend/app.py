@@ -1517,9 +1517,10 @@ def capture_interval():
     iv = max(15, int(body.get('interval', 15)))
     did = (body.get('deviceId') or '').strip()
     with _capture_lock:
-        if did and did in _capture_states:
-            _capture_states[did]['interval'] = iv
-            ev = _capture_states[did].get('_wake_event')
+        if did:
+            cstate = _get_device_capture_state(did)
+            cstate['interval'] = iv
+            ev = cstate.get('_wake_event')
             if ev: ev.set()
         else:
             for s in _capture_states.values():
