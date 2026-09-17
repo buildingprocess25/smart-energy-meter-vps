@@ -103,9 +103,53 @@ let chartTimestamps = [];
 let _rafId = null;
 let _rafDirty = false;
 let _pageVisible = !document.hidden;
+let _lastVisibleTime = Date.now();
+
+async function _resyncLiveBuffer(deviceId) {
+    if (!deviceId || timeFilter !== 'all') return;
+    try {
+        const res = await fetch(`/api/live-buffer/${encodeURIComponent(deviceId)}`);
+        const dataList = await res.json();
+        if (!Array.isArray(dataList) || dataList.length === 0) return;
+
+        const cachedLastTs = chartTimestamps.length ? chartTimestamps[chartTimestamps.length - 1] : 0;
+        const phases = _getEnabledPhaseKeys();
+
+        dataList.forEach(item => {
+            const ts = item.timestamp;
+            if (ts > cachedLastTs && item.data && !item.data.offline) {
+                const point = { ts };
+                phases.forEach(ph => { point[ph] = item.data[ph] || _chartZeroPoint(); });
+                _appendChartPoint(point);
+            }
+        });
+
+        while (chartLabels.length > MAX_DATA_POINTS) {
+            chartLabels.shift();
+            chartTimestamps.shift();
+            Object.keys(phaseChartData).forEach(ph => {
+                PARAM_KEYS.forEach(k => { phaseChartData[ph]?.[k]?.shift(); });
+            });
+        }
+        _rafDirty = true;
+        _scheduleRender();
+    } catch (e) {
+        console.warn("[_resyncLiveBuffer] Failed:", e);
+    }
+}
+
 document.addEventListener('visibilitychange', () => {
     _pageVisible = !document.hidden;
-    if (_pageVisible && _rafDirty && timeFilter === 'all') _scheduleRender();
+    if (_pageVisible) {
+        const now = Date.now();
+        if (now - _lastVisibleTime > 4000 && selectedDeviceId) {
+            _resyncLiveBuffer(selectedDeviceId);
+        }
+        _lastVisibleTime = now;
+        if (_rafDirty && timeFilter === 'all') _scheduleRender();
+    } else {
+        _lastVisibleTime = Date.now();
+    }
 });
 function _scheduleRender() {
     if (_rafId) return;
@@ -2210,26 +2254,8 @@ async function _chartInit(deviceId) {
     }
     if (!phases.length) phases = ['L1'];
 
-    // ── Restore dari localStorage (data sebelum refresh / server restart) ──
-    const cache = _loadChartCache(deviceId);
     const validPhasesSet = new Set(phases);
-    if (cache) {
-        chartLabels = [...cache.chartLabels];
-        chartTimestamps = [...cache.chartTimestamps];
-        // deep-copy HANYA untuk phase yang saat ini aktif/terdaftar
-        Object.keys(cache.phaseChartData).forEach(ph => {
-            if (validPhasesSet.has(ph)) {
-                phaseChartData[ph] = {};
-                Object.keys(cache.phaseChartData[ph]).forEach(param => {
-                    phaseChartData[ph][param] = [...cache.phaseChartData[ph][param]];
-                });
-            }
-        });
-    }
-    // ────────────────────────────────────────────────────────────────────────
-
-    // Timestamp terakhir yang sudah ada di cache (hindari duplikat)
-    const cachedLastTs = chartTimestamps.length ? chartTimestamps[chartTimestamps.length - 1] : 0;
+    const cachedLastTs = 0;
 
     try {
         // Fetch kedua sumber secara paralel
@@ -2330,13 +2356,11 @@ async function _chartInit(deviceId) {
     } catch (e) {
         console.error("Error in _chartInit:", e);
         if (seq !== _chartInitSeq) return;
-        if (!cache) {
-            const interval = typeof CHART_INTERVAL_MS !== 'undefined' ? CHART_INTERVAL_MS : 5000;
-            for (let ts = now - _visiblePoints * interval; ts <= now; ts += interval) {
-                const point = { ts };
-                phases.forEach(ph => { point[ph] = _chartZeroPoint(); });
-                _appendChartPoint(point);
-            }
+        const interval = typeof CHART_INTERVAL_MS !== 'undefined' ? CHART_INTERVAL_MS : 5000;
+        for (let ts = now - _visiblePoints * interval; ts <= now; ts += interval) {
+            const point = { ts };
+            phases.forEach(ph => { point[ph] = _chartZeroPoint(); });
+            _appendChartPoint(point);
         }
     }
 

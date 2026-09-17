@@ -662,27 +662,15 @@ _device_live_buffer = {}
 
 def _live_buffer_worker() -> None:
     time.sleep(2)
+    last_db_check = 0
     while True:
         try:
-            if not db_pool:
-                time.sleep(10)
-                continue
             now_ms = int(time.time() * 1000)
             now = time.time()
 
-            # --- Langkah 1: Baca state semua device (1 koneksi) ---
-            with get_db_cursor() as cur:
-                cur.execute("SELECT id, online, last_seen FROM devices")
-                db_devices = cur.fetchall()
-
-            devices_meta = {row[0]: {'online': row[1], 'last_seen': row[2]} for row in db_devices}
-            dids = set(devices_meta.keys()) | set(_mqtt_live_data.keys())
-
-            # --- Langkah 2: Hitung perubahan di memori (tanpa DB) ---
-            offline_updates = []    # device_id yang perlu di-set offline
-            online_updates  = []    # (device_id, ts_str) yang perlu di-set online
-
-            for did in dids:
+            # --- Langkah 1: Simpan snapshot kontinu ke RAM buffer setiap 1 detik ---
+            all_known_dids = set(_mqtt_live_data.keys())
+            for did in all_known_dids:
                 raw = _mqtt_live_data.get(did)
                 last_seen = _mqtt_last_seen.get(did, 0)
                 is_offline = (now - last_seen > 300) or not raw
@@ -694,44 +682,60 @@ def _live_buffer_worker() -> None:
                     if not _device_is_offline.get(did, False):
                         _device_is_offline[did] = True
                         _device_live_buffer[did].append({'timestamp': now_ms, 'data': {"offline": True}})
-
-                    meta = devices_meta.get(did)
-                    if meta and meta['online'] != False:
-                        offline_updates.append(did)
                 else:
                     _device_is_offline[did] = False
-                    # Simpan snapshot kontinu ke RAM buffer setiap loop (~3 detik)
                     raw_copy = json.loads(json.dumps(raw)) if raw else {}
                     _device_live_buffer[did].append({'timestamp': now_ms, 'data': raw_copy})
                     _live_buffer_last_push[did] = now
 
-                    meta = devices_meta.get(did)
-                    status_changed = not meta or meta['online'] != True
-                    time_for_ping = (now - _db_last_ping.get(did, 0) > 30)
-                    if status_changed or time_for_ping:
-                        _db_last_ping[did] = now
-                        ts_str = (raw or {}).get('Timestamp') or _ts_now()
-                        online_updates.append((did, ts_str))
-
-            # --- Langkah 3: Tulis semua perubahan dalam 1 koneksi ---
-            if offline_updates or online_updates:
+            # --- Langkah 2: Database online/offline & ping sync (throttled setiap 5 detik) ---
+            if db_pool and (now - last_db_check >= 5):
+                last_db_check = now
                 with get_db_cursor() as cur:
-                    for did in offline_updates:
-                        cur.execute("""
-                            INSERT INTO devices (id, name, online, last_seen)
-                            VALUES (%s, %s, FALSE, '---')
-                            ON CONFLICT (id) DO UPDATE SET online = FALSE;
-                        """, (did, did))
-                    for did, ts_str in online_updates:
-                        cur.execute("""
-                            INSERT INTO devices (id, name, online, last_seen)
-                            VALUES (%s, %s, TRUE, %s)
-                            ON CONFLICT (id) DO UPDATE SET online = TRUE, last_seen = %s;
-                        """, (did, did, ts_str, ts_str))
+                    cur.execute("SELECT id, online, last_seen FROM devices")
+                    db_devices = cur.fetchall()
+
+                devices_meta = {row[0]: {'online': row[1], 'last_seen': row[2]} for row in db_devices}
+                dids = set(devices_meta.keys()) | all_known_dids
+
+                offline_updates = []    # device_id yang perlu di-set offline
+                online_updates  = []    # (device_id, ts_str) yang perlu di-set online
+
+                for did in dids:
+                    raw = _mqtt_live_data.get(did)
+                    last_seen = _mqtt_last_seen.get(did, 0)
+                    is_offline = (now - last_seen > 300) or not raw
+                    meta = devices_meta.get(did)
+
+                    if is_offline:
+                        if meta and meta['online'] != False:
+                            offline_updates.append(did)
+                    else:
+                        status_changed = not meta or meta['online'] != True
+                        time_for_ping = (now - _db_last_ping.get(did, 0) > 30)
+                        if status_changed or time_for_ping:
+                            _db_last_ping[did] = now
+                            ts_str = (raw or {}).get('Timestamp') or _ts_now()
+                            online_updates.append((did, ts_str))
+
+                if offline_updates or online_updates:
+                    with get_db_cursor() as cur:
+                        for did in offline_updates:
+                            cur.execute("""
+                                INSERT INTO devices (id, name, online, last_seen)
+                                VALUES (%s, %s, FALSE, '---')
+                                ON CONFLICT (id) DO UPDATE SET online = FALSE;
+                            """, (did, did))
+                        for did, ts_str in online_updates:
+                            cur.execute("""
+                                INSERT INTO devices (id, name, online, last_seen)
+                                VALUES (%s, %s, TRUE, %s)
+                                ON CONFLICT (id) DO UPDATE SET online = TRUE, last_seen = %s;
+                            """, (did, did, ts_str, ts_str))
 
         except Exception as e:
             print(f"Error in _live_buffer_worker: {e}")
-        time.sleep(3)
+        time.sleep(1)
 
 if not app.debug or os.environ.get("WERKZEUG_RUN_MAIN") == "true":
     init_db()
