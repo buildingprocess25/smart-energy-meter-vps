@@ -2652,7 +2652,7 @@ function _populateDeviceSelect(devices) {
         const displayName = d.name && d.name !== d.id ? `${d.id} ${d.name}` : d.id;
         const statusText = d.online ? 'Online' : 'Offline';
         const isRecording = _activeRecordingDeviceIds && _activeRecordingDeviceIds.has(d.id);
-        const recTag = isRecording ? '🔴 [REC] ' : '';
+        const recTag = isRecording ? '[REC] ' : '';
         return `<option value="${d.id}"${d.id === currentVal ? ' selected' : ''}>${recTag}${displayName} (${statusText})</option>`;
     }).join('');
     selects.forEach(sel => {
@@ -5256,22 +5256,22 @@ function _renderRecordingBadgeAndPopover(activeDevIds, devicesMap, isDevActive, 
                         <span class="rec-card-dev-name" title="${safeDname}">${dName}</span>
                     </div>
                     <span class="rec-card-status-pill ${isCurrent ? 'current' : 'bg'}">
-                        ${isCurrent ? '● Sedang Dibuka' : 'Background'}
+                        ${isCurrent ? 'Aktif' : 'Background'}
                     </span>
                 </div>
                 <div class="rec-card-body">
-                    <div class="rec-card-session" title="${_escapeAttr(sName)}">📝 ${sName}</div>
+                    <div class="rec-card-session" title="${_escapeAttr(sName)}">Sesi: ${sName}</div>
                     <div class="rec-card-meta">
-                        <span>⏱ Interval: ${iv}s</span>
+                        <span>Interval: ${iv}s</span>
                         <span>•</span>
-                        <span>📊 ${cnt} record</span>
+                        <span>${cnt} record</span>
                         <span>•</span>
-                        <span>🕒 Mulai: ${startedAt}</span>
+                        <span>Mulai: ${startedAt}</span>
                     </div>
                 </div>
                 <div class="rec-card-actions">
                     <button type="button" class="rec-action-view" ${isCurrent ? 'disabled' : ''} onclick="switchToRecordingDevice('${did}')">
-                        ${isCurrent ? '✔ Sedang Aktif di Layar' : '👁 Buka Monitoring Device'}
+                        ${isCurrent ? 'Sedang Dipilih' : 'Buka Device'}
                     </button>
                     <button type="button" class="rec-action-stop" onclick="quickStopSpecificDevice('${did}', '${safeDname}')" title="Hentikan perekaman ${safeDname}">
                         Stop
