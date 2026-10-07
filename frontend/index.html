@@ -49,11 +49,27 @@
                 </div>
             </a>
             <div class="header-right-group">
-                <div class="recording-badge" id="recordingBadge" style="display: none;">
-                    <span class="rec-dot">●</span>
-                    <span class="rec-title">REC</span>
-                    <span class="rec-info" id="recBadgeInfo">15s</span>
-                    <button class="rec-stop-btn" onclick="quickStopCapture()" title="Hentikan Perekaman Sesi Ini">Stop</button>
+                <div class="recording-badge-wrapper" id="recordingBadgeWrapper">
+                    <div class="recording-badge" id="recordingBadge" style="display: none;" onclick="toggleRecordingPopover(event)" title="Klik untuk melihat daftar device yang sedang merekam">
+                        <span class="rec-dot">●</span>
+                        <span class="rec-title">REC</span>
+                        <span class="rec-info" id="recBadgeInfo">15s</span>
+                        <span class="rec-chevron" id="recBadgeChevron">▼</span>
+                    </div>
+                    <!-- Popover daftar semua device yang sedang merekam -->
+                    <div class="recording-popover" id="recordingPopover" style="display: none;">
+                        <div class="rec-popover-header">
+                            <div class="rec-popover-title-row">
+                                <span class="rec-dot">●</span>
+                                <span>Perekaman Aktif</span>
+                                <span class="rec-popover-badge" id="recPopoverBadge">0 Device</span>
+                            </div>
+                            <button type="button" class="rec-popover-close-btn" onclick="closeRecordingPopover(event)" title="Tutup">✕</button>
+                        </div>
+                        <div class="rec-popover-list" id="recPopoverList">
+                            <!-- Diisi dinamis oleh JavaScript -->
+                        </div>
+                    </div>
                 </div>
                 <div class="status-indicator">
                     <div class="status-dot connecting" id="statusDot"></div>

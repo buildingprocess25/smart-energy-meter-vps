@@ -314,6 +314,13 @@ def init_db():
                             phase_name VARCHAR(100) DEFAULT NULL
                         );
                     """)
+                    cur.execute("""
+                        CREATE TABLE IF NOT EXISTS capture_states (
+                            device_id VARCHAR(50) PRIMARY KEY,
+                            state JSONB NOT NULL,
+                            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                        );
+                    """)
                     # Alter table add column if not exists
                     columns_to_add = [
                         ('history', 'phase_name', 'VARCHAR(100) DEFAULT NULL'),
@@ -510,27 +517,57 @@ def _save_capture_states():
                         'count': state.get('count', 0),
                         'enabled_phases': state.get('enabled_phases'),
                         'sensor_names': state.get('sensor_names', {}),
-                        'time_offset_ms': state.get('time_offset_ms', 0)
+                        'time_offset_ms': state.get('time_offset_ms', 0),
+                        'store_id': state.get('store_id'),
                     }
         with open(STATE_FILE, 'w') as f:
             json.dump(safe_states, f)
+
+        if db_pool:
+            try:
+                with get_db_cursor() as cur:
+                    cur.execute("DELETE FROM capture_states;")
+                    for did, sdata in safe_states.items():
+                        cur.execute(
+                            "INSERT INTO capture_states (device_id, state) VALUES (%s, %s) ON CONFLICT (device_id) DO UPDATE SET state = %s, updated_at = CURRENT_TIMESTAMP;",
+                            (did, json.dumps(sdata), json.dumps(sdata))
+                        )
+            except Exception as dbe:
+                print(f"Error persisting capture states to DB: {dbe}")
     except Exception as e:
         print(f"Error saving capture states: {e}")
 
 def _load_capture_states():
     try:
-        if os.path.exists(STATE_FILE):
+        saved = {}
+        # Prioritas 1: Baca dari DB PostgreSQL (persistent walau container docker di-recreate)
+        if db_pool:
+            try:
+                with get_db_cursor() as cur:
+                    cur.execute("SELECT device_id, state FROM capture_states")
+                    for r_did, r_state in cur.fetchall():
+                        st = r_state if isinstance(r_state, dict) else json.loads(r_state)
+                        if st and st.get('active'):
+                            saved[r_did] = st
+            except Exception as dbe:
+                print(f"Note loading capture states from DB: {dbe}")
+
+        # Prioritas 2: Fallback baca dari STATE_FILE jika DB kosong / belum ada
+        if not saved and os.path.exists(STATE_FILE):
             with open(STATE_FILE, 'r') as f:
                 saved = json.load(f)
-            to_start = []
-            with _capture_lock:
-                for did, state in saved.items():
-                    if state.get('active'):
-                        cstate = _get_device_capture_state(did)
-                        cstate.update(state)
-                        to_start.append(did)
-            for did in to_start:
-                _start_thread(did)
+
+        to_start = []
+        with _capture_lock:
+            for did, state in saved.items():
+                if state.get('active'):
+                    cstate = _get_device_capture_state(did)
+                    cstate.update(state)
+                    to_start.append(did)
+        for did in to_start:
+            _start_thread(did)
+        if to_start:
+            print(f"[Auto-Resume] Resumed active capture threads for devices: {to_start}")
     except Exception as e:
         print(f"Error loading capture states: {e}")
 
@@ -739,6 +776,7 @@ def _live_buffer_worker() -> None:
 
 if not app.debug or os.environ.get("WERKZEUG_RUN_MAIN") == "true":
     init_db()
+    _load_capture_states()
     threading.Thread(target=_live_buffer_worker, daemon=True).start()
 
 @app.route('/api/live-buffer/<device_id>')
@@ -1671,7 +1709,9 @@ def get_sessions(device_id: str = 'all'):
 
                         existing = next((s for s in sessions if s['id'] == active_sid), None)
                         if existing:
-                            existing['recordCount'] = max(existing['recordCount'], active_count)
+                            existing['recordCount'] = max(existing.get('recordCount', 0), active_count)
+                            existing['endTime'] = None
+                            existing['isActive'] = True
                         else:
                             sessions.insert(0, {
                                 'id': active_sid,
@@ -1684,6 +1724,7 @@ def get_sessions(device_id: str = 'all'):
                                 'deviceName': cur_dname,
                                 'phases': active_phases,
                                 'phaseNames': active_names or {ph: ph for ph in active_phases},
+                                'isActive': True,
                             })
 
         return jsonify(sessions)

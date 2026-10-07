@@ -45,6 +45,8 @@ let _phaseTimeoutCheckId = null;
 // Cache data phase terakhir yang valid — agar chart tidak anjlok ke 0 saat data stale sesaat
 let _lastKnownPhaseData = {}; // { 'L1': { 'Voltage (V)': ..., ... }, 'L2': {...}, ... }
 let _deviceListCache = [];
+let _activeRecordingDeviceIds = new Set();
+let _activeRecordingDevicesMap = {};
 let _prevDeviceId = '';
 let currentSessionId = null;
 let sessionsData = {};
@@ -2649,7 +2651,9 @@ function _populateDeviceSelect(devices) {
     const html = devices.map(d => {
         const displayName = d.name && d.name !== d.id ? `${d.id} ${d.name}` : d.id;
         const statusText = d.online ? 'Online' : 'Offline';
-        return `<option value="${d.id}"${d.id === currentVal ? ' selected' : ''}>${displayName} (${statusText})</option>`;
+        const isRecording = _activeRecordingDeviceIds && _activeRecordingDeviceIds.has(d.id);
+        const recTag = isRecording ? '🔴 [REC] ' : '';
+        return `<option value="${d.id}"${d.id === currentVal ? ' selected' : ''}>${recTag}${displayName} (${statusText})</option>`;
     }).join('');
     selects.forEach(sel => {
         sel.innerHTML = html;
@@ -2669,6 +2673,10 @@ function renderDeviceList(devices) {
     const closeSVG = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>`;
     container.innerHTML = devices.map(d => {
         const dotClass = d.online ? 'online' : 'offline';
+        const isRec = _activeRecordingDeviceIds && _activeRecordingDeviceIds.has(d.id);
+        const recBadgeHTML = isRec 
+            ? `<span style="background:rgba(220,53,69,0.15);color:#ff3547;border:1px solid rgba(220,53,69,0.3);font-size:9.5px;font-weight:800;padding:1px 6px;border-radius:4px;display:inline-flex;align-items:center;gap:4px"><span class="rec-dot" style="font-size:9px">●</span> REC</span>` 
+            : '';
         const phasesHTML = (d.phases && d.phases.length > 0)
             ? d.phases.map(p => {
                 const isEnabled = p.enabled !== false;
@@ -2731,6 +2739,7 @@ function renderDeviceList(devices) {
                         <div class="device-title-row" id="label_wrap_${d.id}">
                             <strong class="device-id-title">${d.id}</strong>
                             ${storeTagHTML}
+                            ${recBadgeHTML}
                         </div>
                         <p class="device-item-id">${d.phaseCount || 0} Sensor · Last seen: ${d.lastSeen || '---'}</p>
                     </div>
@@ -3894,10 +3903,44 @@ async function _attachHistoryListener(deviceId, isAutoPoll = false) {
                 if (oldSessions[meta.id] && oldSessions[meta.id].computedPhases) {
                     meta.computedPhases = oldSessions[meta.id].computedPhases;
                 }
+                const devCap = _activeRecordingDevicesMap && _activeRecordingDevicesMap[meta.deviceId];
+                if ((devCap && devCap.active && devCap.session_id === meta.id) || meta.isActive) {
+                    meta.endTime = null;
+                    meta.isActive = true;
+                    if (devCap && devCap.count != null) {
+                        meta.recordCount = Math.max(meta.recordCount || 0, devCap.count);
+                    }
+                }
                 sessionsData[meta.id] = meta;
                 totalCount += meta.recordCount || 0;
             });
-            updateDbDeviceFilterOptions(list);
+            // Pastikan sesi aktif yang baru mulai dan belum tercatat di DB history juga masuk ke sessionsData
+            if (_activeRecordingDevicesMap) {
+                Object.entries(_activeRecordingDevicesMap).forEach(([did, devCap]) => {
+                    if (devCap && devCap.active && devCap.session_id && !sessionsData[devCap.session_id]) {
+                        const devObj = _deviceListCache.find(d => d.id === did);
+                        const devPhases = devObj && devObj.phases 
+                            ? devObj.phases.filter(p => p.enabled !== false).map(p => p.phase)
+                            : ['L1', 'L2', 'L3', 'L4', 'L5'];
+                        const dName = devObj && devObj.name && devObj.name !== did ? `${did} ${devObj.name}` : (devCap.device_name || did);
+                        sessionsData[devCap.session_id] = {
+                            id: devCap.session_id,
+                            name: devCap.session_name || 'Rekaman',
+                            startTime: devCap.started_at || '---',
+                            endTime: null,
+                            recordCount: devCap.count || 0,
+                            startTimestamp: devCap.started_at ? parseTimestampToEpoch(devCap.started_at) : Date.now(),
+                            deviceId: did,
+                            deviceName: dName,
+                            phases: devPhases,
+                            phaseNames: {},
+                            isActive: true,
+                        };
+                        totalCount += devCap.count || 0;
+                    }
+                });
+            }
+            updateDbDeviceFilterOptions(Object.values(sessionsData));
         }
         historyData = Array(totalCount).fill(1);
         buildSessionUI(isAutoPoll);
@@ -3974,7 +4017,7 @@ function buildSessionUI(isAutoPoll = false) {
     const existingRowCount = tbody.querySelectorAll('.session-row').length;
 
     // 3. Jika ini auto-poll berkala, dan jumlah baris di DOM SAMA dengan jumlah sesi yang ada:
-    //    Cukup perbarui angka recordCount di tempat agar DOM tidak di-wipe & zoom level grafik tidak ter-reset!
+    //    Cukup perbarui angka recordCount & status live di tempat agar DOM tidak di-wipe & grafik tidak ter-reset!
     if (isAutoPoll && existingRowCount === filtered.length && tbody.children.length > 0) {
         filtered.forEach(session => {
             const row = document.getElementById(`detail_${session.id}`)?.previousElementSibling;
@@ -3982,6 +4025,31 @@ function buildSessionUI(isAutoPoll = false) {
                 const countBadge = row.querySelector('.record-count-badge');
                 if (countBadge) {
                     countBadge.textContent = `${session.recordCount || 0} record`;
+                }
+                const devCap = _activeRecordingDevicesMap && _activeRecordingDevicesMap[session.deviceId];
+                const isDeviceCaptureMatch = Boolean(devCap && devCap.active && devCap.session_id === session.id);
+                const isActive = (session.id === currentSessionId && captureActive) || isDeviceCaptureMatch || Boolean(session.isActive) || (!session.endTime && _activeRecordingDeviceIds && _activeRecordingDeviceIds.has(session.deviceId));
+                
+                row.classList.toggle('session-active', isActive);
+                const nameCell = row.querySelector('.session-name-cell');
+                if (nameCell) {
+                    let liveBadge = Array.from(nameCell.querySelectorAll('.session-live-badge')).find(el => !el.textContent.includes('OFFLINE'));
+                    if (isActive && !liveBadge) {
+                        const span = document.createElement('span');
+                        span.className = 'session-live-badge';
+                        span.innerHTML = '&#9679; LIVE';
+                        nameCell.appendChild(span);
+                    } else if (!isActive && liveBadge) {
+                        liveBadge.remove();
+                    }
+                }
+                const endTimeCell = row.children[3];
+                if (endTimeCell) {
+                    if (isActive) {
+                        endTimeCell.innerHTML = '<span style="color:#00A651;font-weight:700">Sedang berlangsung...</span>';
+                    } else if (session.endTime) {
+                        endTimeCell.textContent = session.endTime;
+                    }
                 }
             }
         });
@@ -3994,7 +4062,9 @@ function buildSessionUI(isAutoPoll = false) {
     tbody.innerHTML = filtered.map(session => {
         const dev2 = _deviceListCache.find(d => d.id === (session.deviceId || selectedDeviceId));
         const liveDeviceName = dev2?.name || session.deviceName || session.deviceId;
-        const isActive = session.id === currentSessionId && captureActive;
+        const devCap = _activeRecordingDevicesMap && _activeRecordingDevicesMap[session.deviceId];
+        const isDeviceCaptureMatch = Boolean(devCap && devCap.active && devCap.session_id === session.id);
+        const isActive = (session.id === currentSessionId && captureActive) || isDeviceCaptureMatch || Boolean(session.isActive) || (!session.endTime && _activeRecordingDeviceIds && _activeRecordingDeviceIds.has(session.deviceId));
         let actionBtns = '';
         if (isActive) {
             actionBtns += `
@@ -5070,40 +5140,233 @@ async function syncCaptureStatus() {
             if (DOM.intervalDisplay)
                 DOM.intervalDisplay.textContent = `Current: ${serverSec} seconds`;
         }
-        // Perbarui UI sesi aktif dari status memori tanpa request database
-        if (captureActive && selectedDeviceId) {
-            buildSessionUI(true);
-        }
-        const recBadge = $('recordingBadge');
-        const recInfo = $('recBadgeInfo');
+        // ── Perbarui status perekaman multi-device ──
         const activeDevIds = status.active_device_ids || (status.active && status.device_id ? [status.device_id] : []);
+        const devicesMap = status.devices || {};
+        _activeRecordingDevicesMap = devicesMap;
 
-        if (recBadge) {
-            if (activeDevIds.length > 0) {
-                recBadge.style.display = 'flex';
-                if (recInfo) {
-                    if (isDevActive) {
-                        const ivStr = currentDevStatus.interval ? `${currentDevStatus.interval}s` : '15s';
-                        const cntStr = currentDevStatus.count != null ? `${currentDevStatus.count} recs` : '';
-                        const sName = currentDevStatus.session_name || 'Rekaman';
-                        recInfo.textContent = `${sName} (${ivStr} · ${cntStr})`;
-                    } else {
-                        const activeDevName = (status.devices && status.devices[activeDevIds[0]])
-                            ? (status.devices[activeDevIds[0]].device_name || activeDevIds[0])
-                            : activeDevIds[0];
-                        recInfo.textContent = `Background: ${activeDevName} (${activeDevIds.length} aktif)`;
+        // Injeksi/sinkronisasi semua sesi aktif di seluruh perangkat ke sessionsData
+        activeDevIds.forEach(did => {
+            const devCap = devicesMap[did] || (did === selectedDeviceId ? currentDevStatus : null);
+            if (devCap && devCap.active && devCap.session_id) {
+                const sId = devCap.session_id;
+                if (!sessionsData[sId]) {
+                    const devObj = _deviceListCache.find(d => d.id === did);
+                    const devPhases = devObj && devObj.phases 
+                        ? devObj.phases.filter(p => p.enabled !== false).map(p => p.phase)
+                        : ['L1', 'L2', 'L3', 'L4', 'L5'];
+                    const dName = devObj && devObj.name && devObj.name !== did ? `${did} ${devObj.name}` : (devCap.device_name || did);
+                    sessionsData[sId] = {
+                        id: sId,
+                        name: devCap.session_name || 'Rekaman',
+                        startTime: devCap.started_at || '---',
+                        endTime: null,
+                        recordCount: devCap.count || 0,
+                        startTimestamp: devCap.started_at ? parseTimestampToEpoch(devCap.started_at) : Date.now(),
+                        deviceId: did,
+                        deviceName: dName,
+                        phases: devPhases,
+                        phaseNames: {},
+                        isActive: true,
+                    };
+                } else {
+                    sessionsData[sId].endTime = null;
+                    sessionsData[sId].isActive = true;
+                    if (devCap.count != null) {
+                        sessionsData[sId].recordCount = Math.max(sessionsData[sId].recordCount || 0, devCap.count);
                     }
                 }
-            } else {
-                recBadge.style.display = 'none';
             }
+        });
+
+        // Perbarui UI sesi aktif dari status memori jika ada perangkat yang merekam
+        if (activeDevIds.length > 0 || captureActive) {
+            buildSessionUI(true);
         }
+
+        const prevKeys = Array.from(_activeRecordingDeviceIds).sort().join(',');
+        const nextKeys = activeDevIds.slice().sort().join(',');
+        _activeRecordingDeviceIds = new Set(activeDevIds);
+        if (prevKeys !== nextKeys && _deviceListCache && _deviceListCache.length > 0) {
+            _populateDeviceSelect(_deviceListCache);
+        }
+
+        _renderRecordingBadgeAndPopover(activeDevIds, devicesMap, isDevActive, currentDevStatus);
     } catch (e) { }
 }
 
+function _renderRecordingBadgeAndPopover(activeDevIds, devicesMap, isDevActive, currentDevStatus) {
+    const recBadge = $('recordingBadge');
+    const recInfo = $('recBadgeInfo');
+    const popoverBadge = $('recPopoverBadge');
+    const popoverList = $('recPopoverList');
+    const popover = $('recordingPopover');
+
+    if (!recBadge) return;
+
+    if (!activeDevIds || activeDevIds.length === 0) {
+        recBadge.style.display = 'none';
+        if (popover) {
+            popover.style.display = 'none';
+            recBadge.classList.remove('is-open');
+        }
+        return;
+    }
+
+    recBadge.style.display = 'inline-flex';
+
+    if (recInfo) {
+        if (activeDevIds.length === 1) {
+            const singleId = activeDevIds[0];
+            const singleDev = devicesMap[singleId] || (singleId === selectedDeviceId ? currentDevStatus : {});
+            const devName = singleDev.device_name || singleId;
+            const ivStr = singleDev.interval ? `${singleDev.interval}s` : '15s';
+            const cntStr = singleDev.count != null ? `${singleDev.count} recs` : '';
+            if (singleId === selectedDeviceId) {
+                const sName = singleDev.session_name || 'Rekaman';
+                recInfo.textContent = `${sName} (${ivStr} · ${cntStr})`;
+            } else {
+                recInfo.textContent = `${devName} (${ivStr} · ${cntStr})`;
+            }
+        } else {
+            recInfo.textContent = `${activeDevIds.length} Perangkat Merekam`;
+        }
+    }
+
+    if (popoverBadge) {
+        popoverBadge.textContent = `${activeDevIds.length} Device`;
+    }
+
+    if (popoverList) {
+        popoverList.innerHTML = activeDevIds.map(did => {
+            const dData = devicesMap[did] || (did === selectedDeviceId ? currentDevStatus : {});
+            const isCurrent = did === selectedDeviceId;
+            const dName = dData.device_name || did;
+            const sName = dData.session_name || 'Rekaman';
+            const iv = dData.interval || 15;
+            const cnt = dData.count != null ? dData.count : 0;
+            const startedAt = dData.started_at ? _formatRecStartedAt(dData.started_at) : '-';
+            const safeDname = _escapeAttr(dName);
+
+            return `
+            <div class="rec-device-card${isCurrent ? ' is-current' : ''}">
+                <div class="rec-card-top">
+                    <div class="rec-card-dev-info">
+                        <span class="rec-dot">●</span>
+                        <span class="rec-card-dev-name" title="${safeDname}">${dName}</span>
+                    </div>
+                    <span class="rec-card-status-pill ${isCurrent ? 'current' : 'bg'}">
+                        ${isCurrent ? '● Sedang Dibuka' : 'Background'}
+                    </span>
+                </div>
+                <div class="rec-card-body">
+                    <div class="rec-card-session" title="${_escapeAttr(sName)}">📝 ${sName}</div>
+                    <div class="rec-card-meta">
+                        <span>⏱ Interval: ${iv}s</span>
+                        <span>•</span>
+                        <span>📊 ${cnt} record</span>
+                        <span>•</span>
+                        <span>🕒 Mulai: ${startedAt}</span>
+                    </div>
+                </div>
+                <div class="rec-card-actions">
+                    <button type="button" class="rec-action-view" ${isCurrent ? 'disabled' : ''} onclick="switchToRecordingDevice('${did}')">
+                        ${isCurrent ? '✔ Sedang Aktif di Layar' : '👁 Buka Monitoring Device'}
+                    </button>
+                    <button type="button" class="rec-action-stop" onclick="quickStopSpecificDevice('${did}', '${safeDname}')" title="Hentikan perekaman ${safeDname}">
+                        Stop
+                    </button>
+                </div>
+            </div>`;
+        }).join('');
+    }
+}
+
+function _formatRecStartedAt(tsStr) {
+    if (!tsStr) return '-';
+    try {
+        const d = new Date(tsStr);
+        if (isNaN(d.getTime())) return tsStr;
+        const pad = n => String(n).padStart(2, '0');
+        return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+    } catch (_) {
+        return tsStr;
+    }
+}
+
+function toggleRecordingPopover(event) {
+    if (event) event.stopPropagation();
+    const popover = $('recordingPopover');
+    const badge = $('recordingBadge');
+    if (!popover || !badge) return;
+    const isHidden = popover.style.display === 'none' || !popover.style.display;
+    if (isHidden) {
+        popover.style.display = 'block';
+        badge.classList.add('is-open');
+    } else {
+        popover.style.display = 'none';
+        badge.classList.remove('is-open');
+    }
+}
+
+function closeRecordingPopover(event) {
+    if (event) event.stopPropagation();
+    const popover = $('recordingPopover');
+    const badge = $('recordingBadge');
+    if (popover) popover.style.display = 'none';
+    if (badge) badge.classList.remove('is-open');
+}
+
+async function switchToRecordingDevice(deviceId) {
+    if (!deviceId) return;
+    closeRecordingPopover();
+    if (deviceId !== selectedDeviceId) {
+        await onDeviceChange(deviceId);
+    }
+}
+
+async function quickStopSpecificDevice(deviceId, deviceName) {
+    if (!deviceId) return;
+    const label = deviceName && deviceName !== deviceId ? `"${deviceName}" (${deviceId})` : `device ${deviceId}`;
+    const confirmed = await showModal(
+        'Hentikan Rekaman Device?',
+        `Apakah Anda yakin ingin menghentikan sesi perekaman untuk ${label}?\n\nData yang sudah terekam tetap tersimpan aman di database.`,
+        'warning',
+        ['confirm']
+    );
+    if (!confirmed) return;
+
+    try {
+        const json = await safeFetchJson('/api/capture/stop', {
+            method: 'POST',
+            body: JSON.stringify({ deviceId: deviceId })
+        });
+        if (!json.ok) {
+            await showModal('Error', 'Gagal menghentikan: ' + (json.error || 'Server error'), 'error');
+        } else {
+            if (deviceId === selectedDeviceId) {
+                captureActive = false;
+                currentSessionId = null;
+                _updateCaptureButtonUI(false);
+                if (selectedDeviceId) {
+                    await _attachHistoryListener(selectedDeviceId);
+                }
+            }
+            await syncCaptureStatus();
+            await showModal('Perekaman Dihentikan', `Sesi perekaman untuk ${label} telah berhasil dihentikan.`, 'success');
+        }
+    } catch (e) {
+        await showModal('Error', 'Network error: ' + e.message, 'error');
+    }
+}
+
 async function quickStopCapture() {
-    const confirmed = await showModal('Hentikan Rekaman Sesi?', 'Apakah Anda yakin ingin menghentikan sesi rekaman yang sedang berlangsung?\n\nData yang sudah terekam tetap tersimpan aman di database.', 'warning', ['confirm']);
-    if (confirmed) await _apiStopCapture();
+    if (selectedDeviceId) {
+        await quickStopSpecificDevice(selectedDeviceId, selectedDeviceName);
+    } else {
+        const confirmed = await showModal('Hentikan Rekaman Sesi?', 'Apakah Anda yakin ingin menghentikan sesi rekaman yang sedang berlangsung?\n\nData yang sudah terekam tetap tersimpan aman di database.', 'warning', ['confirm']);
+        if (confirmed) await _apiStopCapture();
+    }
 }
 function _startStatusPolling() {
     if (_captureStatusPollId) return;
@@ -5963,8 +6226,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     $('sessionNameInput')?.addEventListener('keydown', e => {
         if (e.key === 'Enter') { _renamingSessionId ? confirmRenameSession() : confirmStartCapture(); }
     });
-    document.addEventListener('click', () => {
+    document.addEventListener('click', (e) => {
         document.querySelectorAll('.session-dropdown-menu').forEach(el => el.style.display = 'none');
+        if (!e.target.closest('#recordingBadgeWrapper')) {
+            closeRecordingPopover();
+        }
     });
 });
 window.addEventListener('beforeunload', () => {
