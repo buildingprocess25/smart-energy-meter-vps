@@ -563,6 +563,17 @@ def _load_capture_states():
                 if state.get('active'):
                     cstate = _get_device_capture_state(did)
                     cstate.update(state)
+                    # Sinkronkan count aktual dari database history jika ada
+                    sid = cstate.get('session_id')
+                    if sid and db_pool:
+                        try:
+                            with get_db_cursor() as cur:
+                                cur.execute("SELECT COUNT(*) FROM history WHERE session_id = %s", (sid,))
+                                r_cnt = cur.fetchone()
+                                if r_cnt and r_cnt[0]:
+                                    cstate['count'] = r_cnt[0]
+                        except Exception:
+                            pass
                     to_start.append(did)
         for did in to_start:
             _start_thread(did)
@@ -862,7 +873,12 @@ def _do_capture_io(device_id, session_id, sched_ts, interval, last_hash, last_ch
                 [k for k in (raw or {}) if isinstance((raw or {}).get(k), dict) and k not in ('status', 'Timestamp', '_meta', 'cmd', 'realtime', 'RealTime')],
                 key=lambda x: int(x[1:]) if _PHASE_RE.match(x) else 99
             )
-        if not phases: return
+        
+        # Fallback kuat: jika MQTT live data saat restart belum ready, gunakan sensor terdaftar di DB
+        if not phases:
+            phases = _get_telemetry_phases(device_id, raw or {})
+        if not phases:
+            phases = ['R', 'S', 'T']
         
         insert_rows = []
         for ph in phases:
@@ -896,7 +912,7 @@ def _do_capture_io(device_id, session_id, sched_ts, interval, last_hash, last_ch
         print(f"Error in _do_capture_io ({device_id}): {e}")
         try:
             with open("capture_error.log", "a") as f:
-                f.write(f"Error in _do_capture_io ({device_id}): {e}\n")
+                f.write(f"[{_ts_now()}] Error in _do_capture_io ({device_id}): {e}\n")
         except:
             pass
 
@@ -904,20 +920,37 @@ def _capture_worker(device_id: str, stop: threading.Event, wake: threading.Event
     last_hash: list = [None]; last_change: list = [None]
     nxt = time.time() + 3
     while not stop.is_set():
-        if stop.wait(timeout=min(max(0., nxt - time.time()), 0.2)): break
-        if wake.is_set():
-            wake.clear()
-            with _capture_lock: nxt = time.time()
-            continue
-        if time.time() < nxt: continue
-        with _capture_lock:
-            cstate = _get_device_capture_state(device_id)
-            if not cstate.get('active'): break
-            sid = cstate['session_id']; did = cstate['device_id']
-            iv  = float(cstate['interval']); ep = cstate.get('enabled_phases')
-            to_ms = cstate.get('time_offset_ms', 0)
-        sched = nxt; nxt += iv
-        _do_capture_io(did, sid, sched, iv, last_hash, last_change, ep, to_ms)
+        try:
+            if stop.wait(timeout=min(max(0., nxt - time.time()), 0.2)): break
+            if wake.is_set():
+                wake.clear()
+                with _capture_lock: nxt = time.time()
+                continue
+            if time.time() < nxt: continue
+            with _capture_lock:
+                cstate = _get_device_capture_state(device_id)
+                if not cstate.get('active'): break
+                sid = cstate.get('session_id')
+                did = cstate.get('device_id', device_id)
+                iv  = float(cstate.get('interval') or 15)
+                ep  = cstate.get('enabled_phases')
+                to_ms = cstate.get('time_offset_ms', 0)
+            if not sid:
+                break
+            sched = nxt
+            # Jika nxt tertinggal jauh lebih dari 10 detik (misal proses restart atau sleep), sinkronkan ke waktu sekarang
+            if time.time() - nxt > 10:
+                nxt = time.time()
+            nxt += iv
+            _do_capture_io(did, sid, sched, iv, last_hash, last_change, ep, to_ms)
+        except Exception as we:
+            print(f"[Capture Worker Error] Device {device_id}: {we}")
+            try:
+                with open("capture_error.log", "a") as f:
+                    f.write(f"[{_ts_now()}] [Capture Worker Exception] Device {device_id}: {we}\n")
+            except:
+                pass
+            time.sleep(1)
 
 def _start_thread(device_id: str) -> None:
     with _capture_lock:
