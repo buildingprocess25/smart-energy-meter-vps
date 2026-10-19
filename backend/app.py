@@ -63,6 +63,152 @@ def _on_message(client, userdata, msg):
                     _mqtt_live_data[device_id]['status'] = {}
                 _mqtt_live_data[device_id]['status'][parts[3]] = payload
 
+            # Case 2B: Tasmota tele/stat (AlfaEnergy CT & Plug) -> AlfaEnergy/<DEVICE_ID>/tele/SENSOR, tele/STATE, stat/STATE, stat/POWER, etc.
+            elif len(parts) >= 4 and parts[2].lower() in ('tele', 'stat'):
+                sub = parts[3].upper()
+                if sub == 'SENSOR':
+                    try:
+                        data = json.loads(payload)
+                        # Timestamp dari alat (format ISO 8601: 2026-10-16T12:05:37)
+                        time_str = data.get('Time')
+                        if time_str:
+                            try:
+                                dt = datetime.fromisoformat(time_str)
+                                _mqtt_live_data[device_id]['Timestamp'] = dt.strftime('%H:%M:%S %d/%m/%Y')
+                            except Exception:
+                                _mqtt_live_data[device_id]['Timestamp'] = str(time_str)
+
+                        # Deteksi object energi di JSON Tasmota (ENERGY, ENERGY1, PZEM, dll)
+                        energy_keys = [k for k in data if k == 'ENERGY' or (k.startswith('ENERGY') and k[6:].isdigit())]
+                        if not energy_keys:
+                            for k in ('PZEM004T', 'PZEM', 'CSE7766', 'BL0937', 'BL0942'):
+                                if k in data and isinstance(data[k], dict):
+                                    energy_keys = [k]
+                                    break
+
+                        def _get_metric(obj, key, idx=None):
+                            if not isinstance(obj, dict):
+                                return None
+                            val = obj.get(key)
+                            if val is None:
+                                for k_lower, v_lower in obj.items():
+                                    if k_lower.lower() == key.lower():
+                                        val = v_lower
+                                        break
+                            if isinstance(val, list) and idx is not None:
+                                val = val[idx] if idx < len(val) else None
+                            try:
+                                return float(val)
+                            except (TypeError, ValueError):
+                                return None
+
+                        def _build_metrics(e_obj, idx=None):
+                            v = _get_metric(e_obj, 'Voltage', idx)
+                            c = _get_metric(e_obj, 'Current', idx)
+                            w = _get_metric(e_obj, 'Power', idx)
+                            hz = _get_metric(e_obj, 'Frequency', idx)
+                            kwh = _get_metric(e_obj, 'Total', idx)
+                            if kwh is None:
+                                kwh = _get_metric(e_obj, 'Energy', idx)
+                            pf = _get_metric(e_obj, 'Factor', idx)
+                            if pf is None:
+                                pf = _get_metric(e_obj, 'PowerFactor', idx)
+
+                            metrics = {}
+                            if v is not None: metrics['Voltage (V)'] = v
+                            if c is not None: metrics['Current (A)'] = c
+                            if w is not None: metrics['Power (W)'] = w
+                            if hz is not None: metrics['Frequency (Hz)'] = hz
+                            if kwh is not None: metrics['Active Energy (kWh)'] = kwh
+                            if pf is not None: metrics['Power Factor'] = pf
+
+                            va = _get_metric(e_obj, 'ApparentPower', idx)
+                            if va is not None:
+                                metrics['Apparent Power (kVA)'] = round(va / 1000.0, 4)
+                            elif v is not None and c is not None:
+                                metrics['Apparent Power (kVA)'] = round((v * c) / 1000.0, 4)
+
+                            var = _get_metric(e_obj, 'ReactivePower', idx)
+                            if var is not None:
+                                metrics['Reactive Power (kVAR)'] = round(var / 1000.0, 4)
+
+                            return metrics
+
+                        # Parsing multi-channel atau single-channel
+                        if len(energy_keys) > 1:
+                            for i, ekey in enumerate(sorted(energy_keys)):
+                                ph = f"L{i+1}"
+                                if ph not in _mqtt_live_data[device_id]:
+                                    _mqtt_live_data[device_id][ph] = {}
+                                _mqtt_live_data[device_id][ph].update(_build_metrics(data[ekey]))
+                        elif len(energy_keys) == 1:
+                            e_obj = data[energy_keys[0]]
+                            array_lens = [len(e_obj[k]) for k in ('Voltage', 'Current', 'Power') if isinstance(e_obj.get(k), list)]
+                            if array_lens:
+                                num_ch = max(array_lens)
+                                for ch in range(num_ch):
+                                    ph = f"L{ch+1}"
+                                    if ph not in _mqtt_live_data[device_id]:
+                                        _mqtt_live_data[device_id][ph] = {}
+                                    _mqtt_live_data[device_id][ph].update(_build_metrics(e_obj, ch))
+                            else:
+                                ph = "L1"
+                                if ph not in _mqtt_live_data[device_id]:
+                                    _mqtt_live_data[device_id][ph] = {}
+                                _mqtt_live_data[device_id][ph].update(_build_metrics(e_obj))
+
+                        # Simpan info ekstra Tasmota ke metadata status
+                        if 'status' not in _mqtt_live_data[device_id]:
+                            _mqtt_live_data[device_id]['status'] = {}
+                        main_e = data.get(energy_keys[0]) if energy_keys else {}
+                        if isinstance(main_e, dict):
+                            if 'Today' in main_e:
+                                _mqtt_live_data[device_id]['status']['today_kwh'] = main_e['Today']
+                            if 'Yesterday' in main_e:
+                                _mqtt_live_data[device_id]['status']['yesterday_kwh'] = main_e['Yesterday']
+                    except Exception:
+                        pass
+
+                elif sub == 'STATE':
+                    try:
+                        s_data = json.loads(payload)
+                        if 'status' not in _mqtt_live_data[device_id]:
+                            _mqtt_live_data[device_id]['status'] = {}
+                        if 'POWER' in s_data:
+                            _mqtt_live_data[device_id]['status']['relay'] = s_data['POWER']
+                        if 'Uptime' in s_data:
+                            _mqtt_live_data[device_id]['status']['uptime'] = s_data['Uptime']
+                        if 'Wifi' in s_data and isinstance(s_data['Wifi'], dict):
+                            _mqtt_live_data[device_id]['status']['wifi'] = s_data['Wifi']
+                        if 'Heap' in s_data:
+                            _mqtt_live_data[device_id]['status']['heap'] = s_data['Heap']
+                        if 'Time' in s_data and not _mqtt_live_data[device_id].get('Timestamp'):
+                            try:
+                                dt = datetime.fromisoformat(s_data['Time'])
+                                _mqtt_live_data[device_id]['Timestamp'] = dt.strftime('%H:%M:%S %d/%m/%Y')
+                            except Exception:
+                                _mqtt_live_data[device_id]['Timestamp'] = str(s_data['Time'])
+                    except Exception:
+                        pass
+
+                elif sub in ('POWER', 'RESULT'):
+                    if 'status' not in _mqtt_live_data[device_id]:
+                        _mqtt_live_data[device_id]['status'] = {}
+                    try:
+                        res_data = json.loads(payload)
+                        if isinstance(res_data, dict) and 'POWER' in res_data:
+                            _mqtt_live_data[device_id]['status']['relay'] = res_data['POWER']
+                    except Exception:
+                        if payload.strip().upper() in ('ON', 'OFF'):
+                            _mqtt_live_data[device_id]['status']['relay'] = payload.strip().upper()
+
+                elif sub == 'LWT':
+                    if payload.strip().lower() == 'offline':
+                        _mqtt_last_seen[device_id] = 0
+                    elif payload.strip().lower() == 'online':
+                        _mqtt_last_seen[device_id] = time.time()
+
+
             # Case 3A: AlfaEnergy v1.3.0 1P -> AlfaEnergy/<DEVICE_ID>/1P/<LOAD_TYPE>/<UNIT_NUMBER> (5 parts)
             elif len(parts) == 5 and parts[2] == '1P':
                 phase = f"{parts[3]}_{parts[4]}"
@@ -1270,6 +1416,24 @@ def delete_device_permanently(device_id: str):
         return jsonify({'ok': True, 'device_id': device_id})
     except Exception as e:
         print(f"Error in delete_device_permanently: {e}")
+        return jsonify({'ok': False, 'error': str(e)}), 500
+
+@app.route('/api/devices/<device_id>/relay', methods=['POST'])
+def control_device_relay(device_id: str):
+    """Kontrol relay Smart Plug via MQTT topik AlfaEnergy/<device_id>/cmnd/POWER."""
+    global _mqtt_client
+    if not _mqtt_client:
+        return jsonify({'ok': False, 'error': 'MQTT client tidak aktif'}), 503
+    data = request.get_json(silent=True) or {}
+    cmd = str(data.get('state') or 'TOGGLE').strip().upper()
+    if cmd not in ('ON', 'OFF', 'TOGGLE', '1', '0'):
+        return jsonify({'ok': False, 'error': 'State harus ON, OFF, atau TOGGLE'}), 400
+
+    topic = f"AlfaEnergy/{device_id}/cmnd/POWER"
+    try:
+        _mqtt_client.publish(topic, cmd)
+        return jsonify({'ok': True, 'device_id': device_id, 'topic': topic, 'command': cmd})
+    except Exception as e:
         return jsonify({'ok': False, 'error': str(e)}), 500
 
 @app.route('/api/devices/<device_id>/sensors/<phase>/rename', methods=['POST'])

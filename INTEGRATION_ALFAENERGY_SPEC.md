@@ -125,3 +125,24 @@ AlfaEnergy/<DEVICE_ID>/<MODE>/...
 - **Namespace `"metercfg"`**:
   - Key `"count"`: Jumlah channel terkonfigurasi.
   - Key `"c0_en"`, `"c0_addr"`, `"c0_mode"`, `"c0_phase"`, `"c0_load"`, `"c0_unit"` (per channel $0..4$).
+
+---
+
+## 8. Spesifikasi Firmware AlfaEnergy CT & Plug (Tasmota-Based)
+Perangkat yang menggunakan firmware di folder `AlfaEnergy/CTandPlug/`:
+- `AlfaEnergy_CT.bin` (Tasmota32 ESP32)
+- `AlfaEnergy_Plug.bin` (Tasmota32C3 ESP32-C3)
+
+### A. Struktur Topik
+Format topik: `AlfaEnergy/%topic%/%prefix%/` di mana `%topic%` adalah 6 digit MAC ESP (contoh: `E62A34`):
+1. **Telemetri Sensor**: `AlfaEnergy/<DEVICE_ID>/tele/SENSOR`
+   - Payload JSON berisi objek `"ENERGY"` (`Voltage`, `Current`, `Power`, `Frequency`, `Total`, `Factor`, `ApparentPower`, `ReactivePower`) dan `"Time"`.
+   - Untuk multi-channel CT, nilai metrik dapat berupa array atau objek multi-sensor (`ENERGY1`, `ENERGY2`, dst.).
+2. **Status Perangkat**: `AlfaEnergy/<DEVICE_ID>/stat/STATE` dan `AlfaEnergy/<DEVICE_ID>/tele/STATE`
+   - Payload JSON berisi `POWER` (relay), `Uptime`, `Heap`, `Wifi` (SSID, RSSI, Signal).
+3. **Status Relay Smart Plug**: `AlfaEnergy/<DEVICE_ID>/stat/POWER` / `stat/RESULT`
+   - Payload: `{"POWER":"ON"}` atau `ON`/`OFF`.
+4. **Kontrol Relay Smart Plug**: `AlfaEnergy/<DEVICE_ID>/cmnd/POWER`
+   - Payload: `ON`, `OFF`, `TOGGLE`.
+   - Didukung via REST API: `POST /api/devices/<device_id>/relay` dengan body `{"state": "ON"|"OFF"|"TOGGLE"}`.
+
