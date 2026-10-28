@@ -129,20 +129,41 @@ AlfaEnergy/<DEVICE_ID>/<MODE>/...
 ---
 
 ## 8. Spesifikasi Firmware AlfaEnergy CT & Plug (Tasmota-Based)
-Perangkat yang menggunakan firmware di folder `AlfaEnergy/CTandPlug/`:
+Perangkat yang menggunakan firmware di folder `AlfaEnergy/firmware/` (menggantikan `AlfaEnergy/CTandPlug/`):
 - `AlfaEnergy_CT.bin` (Tasmota32 ESP32)
 - `AlfaEnergy_Plug.bin` (Tasmota32C3 ESP32-C3)
 
-### A. Struktur Topik
-Format topik: `AlfaEnergy/%topic%/%prefix%/` di mana `%topic%` adalah 6 digit MAC ESP (contoh: `E62A34`):
-1. **Telemetri Sensor**: `AlfaEnergy/<DEVICE_ID>/tele/SENSOR`
+### A. Struktur Topik MQTT Baru (v2.0 Firmware)
+Format topik: `AlfaEnergy/<TYPE>/<DEVICE_ID>/<prefix>/...` di mana `<TYPE>` adalah `CT` atau `Plug`, dan `<DEVICE_ID>` adalah 6 digit MAC ESP (contoh: `E62A34`, `B80E68`):
+1. **Telemetri Sensor**:
+   - CT: `AlfaEnergy/CT/<DEVICE_ID>/tele/SENSOR`
+   - Plug: `AlfaEnergy/Plug/<DEVICE_ID>/tele/SENSOR`
    - Payload JSON berisi objek `"ENERGY"` (`Voltage`, `Current`, `Power`, `Frequency`, `Total`, `Factor`, `ApparentPower`, `ReactivePower`) dan `"Time"`.
-   - Untuk multi-channel CT, nilai metrik dapat berupa array atau objek multi-sensor (`ENERGY1`, `ENERGY2`, dst.).
-2. **Status Perangkat**: `AlfaEnergy/<DEVICE_ID>/stat/STATE` dan `AlfaEnergy/<DEVICE_ID>/tele/STATE`
+2. **Status Perangkat**:
+   - `AlfaEnergy/<CT|Plug>/<DEVICE_ID>/stat/STATE` dan `AlfaEnergy/<CT|Plug>/<DEVICE_ID>/tele/STATE`
    - Payload JSON berisi `POWER` (relay), `Uptime`, `Heap`, `Wifi` (SSID, RSSI, Signal).
-3. **Status Relay Smart Plug**: `AlfaEnergy/<DEVICE_ID>/stat/POWER` / `stat/RESULT`
-   - Payload: `{"POWER":"ON"}` atau `ON`/`OFF`.
-4. **Kontrol Relay Smart Plug**: `AlfaEnergy/<DEVICE_ID>/cmnd/POWER`
-   - Payload: `ON`, `OFF`, `TOGGLE`.
-   - Didukung via REST API: `POST /api/devices/<device_id>/relay` dengan body `{"state": "ON"|"OFF"|"TOGGLE"}`.
+3. **Status Relay Smart Plug**:
+   - `AlfaEnergy/Plug/<DEVICE_ID>/stat/POWER` / `stat/RESULT`
+4. **Kontrol Relay Smart Plug**:
+   - `AlfaEnergy/Plug/<DEVICE_ID>/cmnd/POWER` (Payload: `ON`, `OFF`, `TOGGLE`).
+
+---
+
+## 9. Catatan Temuan & Rencana Pengembangan Masa Depan (Backlog / Future Improvements)
+*Bagian ini mencatat parameter dan kapabilitas tambahan dari firmware baru untuk pengembangan lanjutan:*
+
+1. **Parameter Tambahan pada Objek `ENERGY`**:
+   - **`ApparentPower` (VA)** & **`ReactivePower` (VAR)**:
+     - Sudah diekstrak di backend ke `Apparent Power (kVA)` dan `Reactive Power (kVAR)`.
+     - *Rencana Masa Depan:* Tambahkan visualisasi grafik kVA / kVAR pada UI dashboard jika dibutuhkan analisis faktor daya mendalam.
+   - **`TodaySumImport`**, **`TodaySumExport`**, **`ExportActive`** (Khusus CT):
+     - Fitur bidirectional metering dari Tasmota untuk mengukur ekspor energi (misal integrasi PLTS / Solar Rooftop di toko).
+     - *Rencana Masa Depan:* Tambahkan tabel/kartu monitoring ekspor energi harian jika ada toko yang memasang solar panel.
+2. **Kontrol Relay Smart Plug**:
+   - Firmware baru menggunakan topik `AlfaEnergy/Plug/<DEVICE_ID>/cmnd/POWER`.
+   - *Rencana Masa Depan:* Tambahkan tombol toggle relay interaktif di detail card device Smart Plug pada frontend web UI.
+3. **Penanda Tipe Perangkat (Device Model Detection)**:
+   - Metadata `device_type: 'CT' | 'Plug'` telah disimpan di status device `_mqtt_live_data[device_id]['status']['device_type']`.
+   - *Rencana Masa Depan:* Gunakan badge/ikon pembeda di daftar perangkat (ikon CT clamp vs stopkontak Smart Plug).
+
 

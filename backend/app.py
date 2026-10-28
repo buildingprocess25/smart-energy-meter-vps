@@ -46,26 +46,39 @@ def _on_message(client, userdata, msg):
         payload = msg.payload.decode('utf-8')
         parts = topic.split('/')
         if len(parts) >= 2 and parts[0] in ('energymeter', 'AlfaEnergy'):
-            device_id = parts[1].strip().rstrip(':').strip()
+            # Dukungan format baru firmware CT & Plug: AlfaEnergy/<CT|Plug>/<DEVICE_ID>/...
+            device_type = None
+            if len(parts) >= 4 and parts[0] == 'AlfaEnergy' and parts[1].upper() in ('CT', 'PLUG'):
+                device_type = parts[1]
+                device_id = parts[2].strip().rstrip(':').strip()
+                sub_parts = parts[3:]
+            else:
+                device_id = parts[1].strip().rstrip(':').strip()
+                sub_parts = parts[2:]
+
             if not device_id or device_id == 'all':
                 return
             _mqtt_last_seen[device_id] = time.time()
             if device_id not in _mqtt_live_data:
                 _mqtt_live_data[device_id] = {}
+            if device_type:
+                if 'status' not in _mqtt_live_data[device_id]:
+                    _mqtt_live_data[device_id]['status'] = {}
+                _mqtt_live_data[device_id]['status']['device_type'] = device_type
 
             # Case 1: Timestamp -> AlfaEnergy/EM-0001/Timestamp atau energymeter/MC3/Timestamp
-            if len(parts) == 3 and parts[2] == 'Timestamp':
+            if len(sub_parts) == 1 and sub_parts[0] == 'Timestamp':
                 _mqtt_live_data[device_id]['Timestamp'] = payload
 
             # Case 2: Status -> AlfaEnergy/EM-0001/status/...
-            elif len(parts) >= 4 and parts[2] == 'status':
+            elif len(sub_parts) >= 2 and sub_parts[0] == 'status':
                 if 'status' not in _mqtt_live_data[device_id]:
                     _mqtt_live_data[device_id]['status'] = {}
-                _mqtt_live_data[device_id]['status'][parts[3]] = payload
+                _mqtt_live_data[device_id]['status'][sub_parts[1]] = payload
 
-            # Case 2B: Tasmota tele/stat (AlfaEnergy CT & Plug) -> AlfaEnergy/<DEVICE_ID>/tele/SENSOR, tele/STATE, stat/STATE, stat/POWER, etc.
-            elif len(parts) >= 4 and parts[2].lower() in ('tele', 'stat'):
-                sub = parts[3].upper()
+            # Case 2B: Tasmota tele/stat (AlfaEnergy CT & Plug) -> tele/SENSOR, tele/STATE, stat/STATE, stat/POWER, etc.
+            elif len(sub_parts) >= 2 and sub_parts[0].lower() in ('tele', 'stat'):
+                sub = sub_parts[1].upper()
                 if sub == 'SENSOR':
                     try:
                         data = json.loads(payload)
@@ -208,10 +221,9 @@ def _on_message(client, userdata, msg):
                     elif payload.strip().lower() == 'online':
                         _mqtt_last_seen[device_id] = time.time()
 
-
-            # Case 3A: AlfaEnergy v1.3.0 1P -> AlfaEnergy/<DEVICE_ID>/1P/<LOAD_TYPE>/<UNIT_NUMBER> (5 parts)
-            elif len(parts) == 5 and parts[2] == '1P':
-                phase = f"{parts[3]}_{parts[4]}"
+            # Case 3A: AlfaEnergy v1.3.0 1P -> AlfaEnergy/<DEVICE_ID>/1P/<LOAD_TYPE>/<UNIT_NUMBER> (sub_parts: ['1P', ...])
+            elif len(sub_parts) == 3 and sub_parts[0] == '1P':
+                phase = f"{sub_parts[1]}_{sub_parts[2]}"
                 try:
                     data = json.loads(payload)
                     if phase not in _mqtt_live_data[device_id]:
@@ -226,8 +238,8 @@ def _on_message(client, userdata, msg):
                     pass
 
             # Case 3B: AlfaEnergy Mode 3P / 1P -> AlfaEnergy/EM-0001/3P/R, AlfaEnergy/EM-0001/3P/S, AlfaEnergy/EM-0001/1P/Lampu
-            elif len(parts) == 4 and parts[2] in ('3P', '1P'):
-                phase = parts[3]
+            elif len(sub_parts) == 2 and sub_parts[0] in ('3P', '1P'):
+                phase = sub_parts[1]
                 try:
                     data = json.loads(payload)
                     if phase not in _mqtt_live_data[device_id]:
@@ -242,8 +254,8 @@ def _on_message(client, userdata, msg):
                     pass
 
             # Case 4: Format baru legacy -> energymeter/alat1/L1
-            elif len(parts) == 3 and re.match(r'^L\d+$', parts[2]):
-                phase = parts[2]
+            elif len(sub_parts) == 1 and re.match(r'^L\d+$', sub_parts[0]):
+                phase = sub_parts[0]
                 try:
                     data = json.loads(payload)
                     if phase not in _mqtt_live_data[device_id]:
@@ -258,8 +270,8 @@ def _on_message(client, userdata, msg):
                     pass
 
             # Case 5: Format lama -> energymeter/alat1/L1/Voltage_V → nilai float tunggal
-            elif len(parts) == 4 and re.match(r'^L\d+$', parts[2]):
-                phase, metric = parts[2], parts[3]
+            elif len(sub_parts) == 2 and re.match(r'^L\d+$', sub_parts[0]):
+                phase, metric = sub_parts[0], sub_parts[1]
                 if phase not in _mqtt_live_data[device_id]:
                     _mqtt_live_data[device_id][phase] = {}
                 try:

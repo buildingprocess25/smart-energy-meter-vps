@@ -3586,77 +3586,116 @@ function initMQTT() {
         try {
             const payload = message.toString();
             const parts = topic.split('/');
-            if (parts.length >= 2 && (parts[0] === 'energymeter' || parts[0] === 'AlfaEnergy') && parts[1] === selectedDeviceId) {
-                if (!rawRealtimeData) {
-                    rawRealtimeData = {};
+            if (parts.length >= 2 && (parts[0] === 'energymeter' || parts[0] === 'AlfaEnergy')) {
+                let devId = parts[1];
+                let subParts = parts.slice(2);
+                if (parts.length >= 4 && parts[0] === 'AlfaEnergy' && (parts[1].toUpperCase() === 'CT' || parts[1].toUpperCase() === 'PLUG')) {
+                    devId = parts[2];
+                    subParts = parts.slice(3);
                 }
 
-                // Update timestamp segera saat MQTT message manapun diterima dari device
-                lastDataTimestamp = Date.now();
+                if (devId === selectedDeviceId) {
+                    if (!rawRealtimeData) {
+                        rawRealtimeData = {};
+                    }
 
-                // Case 1: Timestamp -> AlfaEnergy/EM-0001/Timestamp
-                if (parts.length === 3 && parts[2] === 'Timestamp') {
-                    rawRealtimeData.Timestamp = payload;
-                    _processIncomingMQTTData();
+                    // Update timestamp segera saat MQTT message manapun diterima dari device
+                    lastDataTimestamp = Date.now();
 
-                // Case 2A: AlfaEnergy v1.3.0 1P -> AlfaEnergy/EM-0001/1P/LAMP/01 (5 parts)
-                } else if (parts.length === 5 && parts[2] === '1P') {
-                    const phase = `${parts[3]}_${parts[4]}`;
-                    _phaseLastSeen[phase] = Date.now();
-                    try {
-                        const data = JSON.parse(payload);
-                        if (!rawRealtimeData[phase]) rawRealtimeData[phase] = {};
-                        Object.entries(data).forEach(([k, v]) => {
-                            const mapped = _ESP32_JSON_MAP_JS[k] || k;
-                            rawRealtimeData[phase][mapped] = parseFloat(v) || 0;
-                        });
+                    // Case 0: Tasmota tele/SENSOR (AlfaEnergy CT & Plug)
+                    if (subParts.length >= 2 && subParts[0].toLowerCase() === 'tele' && subParts[1].toUpperCase() === 'SENSOR') {
+                        try {
+                            const data = JSON.parse(payload);
+                            const eObj = data.ENERGY || data.ENERGY1 || data.PZEM || {};
+                            const phase = 'L1';
+                            _phaseLastSeen[phase] = Date.now();
+                            if (!rawRealtimeData[phase]) rawRealtimeData[phase] = {};
+                            if (eObj.Voltage != null) rawRealtimeData[phase]['Voltage (V)'] = parseFloat(eObj.Voltage) || 0;
+                            if (eObj.Current != null) rawRealtimeData[phase]['Current (A)'] = parseFloat(eObj.Current) || 0;
+                            if (eObj.Power != null) rawRealtimeData[phase]['Power (W)'] = parseFloat(eObj.Power) || 0;
+                            if (eObj.Frequency != null) rawRealtimeData[phase]['Frequency (Hz)'] = parseFloat(eObj.Frequency) || 0;
+                            const kwh = eObj.Total != null ? eObj.Total : eObj.Energy;
+                            if (kwh != null) rawRealtimeData[phase]['Active Energy (kWh)'] = parseFloat(kwh) || 0;
+                            const pf = eObj.Factor != null ? eObj.Factor : eObj.PowerFactor;
+                            if (pf != null) rawRealtimeData[phase]['Power Factor'] = parseFloat(pf) || 0;
+
+                            if (data.Time) {
+                                try {
+                                    const d = new Date(data.Time);
+                                    rawRealtimeData.Timestamp = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}:${String(d.getSeconds()).padStart(2, '0')} ${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}/${d.getFullYear()}`;
+                                } catch (_) {
+                                    rawRealtimeData.Timestamp = String(data.Time);
+                                }
+                            }
+                            _processIncomingMQTTData();
+                        } catch (parseErr) {
+                            console.error('[MQTT] Tasmota SENSOR parse error:', parseErr);
+                        }
+
+                    // Case 1: Timestamp -> AlfaEnergy/EM-0001/Timestamp
+                    } else if (subParts.length === 1 && subParts[0] === 'Timestamp') {
+                        rawRealtimeData.Timestamp = payload;
                         _processIncomingMQTTData();
-                    } catch (parseErr) {
-                        console.error('[MQTT] JSON parse error:', parseErr);
-                    }
 
-                // Case 2B: AlfaEnergy Mode 3P / 1P -> AlfaEnergy/EM-0001/3P/R, AlfaEnergy/EM-0001/1P/Lampu
-                } else if (parts.length === 4 && (parts[2] === '3P' || parts[2] === '1P')) {
-                    const phase = parts[3];
-                    _phaseLastSeen[phase] = Date.now();
-                    try {
-                        const data = JSON.parse(payload);
-                        if (!rawRealtimeData[phase]) rawRealtimeData[phase] = {};
-                        Object.entries(data).forEach(([k, v]) => {
-                            const mapped = _ESP32_JSON_MAP_JS[k] || k;
-                            rawRealtimeData[phase][mapped] = parseFloat(v) || 0;
-                        });
-                        _processIncomingMQTTData();
-                    } catch (parseErr) {
-                        console.error('[MQTT] JSON parse error:', parseErr);
-                    }
+                    // Case 2A: AlfaEnergy v1.3.0 1P -> AlfaEnergy/EM-0001/1P/LAMP/01 (subParts: ['1P', 'LAMP', '01'])
+                    } else if (subParts.length === 3 && subParts[0] === '1P') {
+                        const phase = `${subParts[1]}_${subParts[2]}`;
+                        _phaseLastSeen[phase] = Date.now();
+                        try {
+                            const data = JSON.parse(payload);
+                            if (!rawRealtimeData[phase]) rawRealtimeData[phase] = {};
+                            Object.entries(data).forEach(([k, v]) => {
+                                const mapped = _ESP32_JSON_MAP_JS[k] || k;
+                                rawRealtimeData[phase][mapped] = parseFloat(v) || 0;
+                            });
+                            _processIncomingMQTTData();
+                        } catch (parseErr) {
+                            console.error('[MQTT] JSON parse error:', parseErr);
+                        }
 
-                // Case 3: Format baru legacy -> energymeter/alat1/L1
-                } else if (parts.length === 3 && /^L\d+$/i.test(parts[2])) {
-                    const phase = parts[2];
-                    _phaseLastSeen[phase] = Date.now();
-                    try {
-                        const data = JSON.parse(payload);
-                        if (!rawRealtimeData[phase]) rawRealtimeData[phase] = {};
-                        Object.entries(data).forEach(([k, v]) => {
-                            const mapped = _ESP32_JSON_MAP_JS[k] || k;
-                            rawRealtimeData[phase][mapped] = parseFloat(v) || 0;
-                        });
-                        _processIncomingMQTTData();
-                    } catch (parseErr) {
-                        console.error('[MQTT] JSON parse error:', parseErr);
-                    }
+                    // Case 2B: AlfaEnergy Mode 3P / 1P -> 3P/R, 1P/Lampu
+                    } else if (subParts.length === 2 && (subParts[0] === '3P' || subParts[0] === '1P')) {
+                        const phase = subParts[1];
+                        _phaseLastSeen[phase] = Date.now();
+                        try {
+                            const data = JSON.parse(payload);
+                            if (!rawRealtimeData[phase]) rawRealtimeData[phase] = {};
+                            Object.entries(data).forEach(([k, v]) => {
+                                const mapped = _ESP32_JSON_MAP_JS[k] || k;
+                                rawRealtimeData[phase][mapped] = parseFloat(v) || 0;
+                            });
+                            _processIncomingMQTTData();
+                        } catch (parseErr) {
+                            console.error('[MQTT] JSON parse error:', parseErr);
+                        }
 
-                // Case 4: Format lama -> energymeter/alat1/L1/Voltage_V
-                } else if (parts.length === 4 && /^L\d+$/i.test(parts[2])) {
-                    const phase = parts[2];
-                    _phaseLastSeen[phase] = Date.now();
-                    const metric = parts[3];
-                    if (!rawRealtimeData[phase]) {
-                        rawRealtimeData[phase] = {};
+                    // Case 3: Format baru legacy -> energymeter/alat1/L1
+                    } else if (subParts.length === 1 && /^L\d+$/i.test(subParts[0])) {
+                        const phase = subParts[0];
+                        _phaseLastSeen[phase] = Date.now();
+                        try {
+                            const data = JSON.parse(payload);
+                            if (!rawRealtimeData[phase]) rawRealtimeData[phase] = {};
+                            Object.entries(data).forEach(([k, v]) => {
+                                const mapped = _ESP32_JSON_MAP_JS[k] || k;
+                                rawRealtimeData[phase][mapped] = parseFloat(v) || 0;
+                            });
+                            _processIncomingMQTTData();
+                        } catch (parseErr) {
+                            console.error('[MQTT] JSON parse error:', parseErr);
+                        }
+
+                    // Case 4: Format lama -> energymeter/alat1/L1/Voltage_V
+                    } else if (subParts.length === 2 && /^L\d+$/i.test(subParts[0])) {
+                        const phase = subParts[0];
+                        _phaseLastSeen[phase] = Date.now();
+                        const metric = subParts[1];
+                        if (!rawRealtimeData[phase]) {
+                            rawRealtimeData[phase] = {};
+                        }
+                        const mappedMetric = MAP_METRIC_JS[metric] || metric;
+                        rawRealtimeData[phase][mappedMetric] = parseFloat(payload) || 0;
                     }
-                    const mappedMetric = MAP_METRIC_JS[metric] || metric;
-                    rawRealtimeData[phase][mappedMetric] = parseFloat(payload) || 0;
                 }
             }
         } catch (e) {
@@ -3689,6 +3728,7 @@ function _subscribeToDevice(deviceId) {
 
     _subscribedTopic = [
         `AlfaEnergy/${deviceId}/#`,
+        `AlfaEnergy/+/${deviceId}/#`,
         `energymeter/${deviceId}/#`
     ];
 
