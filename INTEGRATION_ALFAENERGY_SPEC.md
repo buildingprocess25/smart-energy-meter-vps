@@ -134,10 +134,20 @@ Perangkat yang menggunakan firmware di folder `AlfaEnergy/firmware/` (menggantik
 - `AlfaEnergy_Plug.bin` (Tasmota32C3 ESP32-C3)
 
 ### A. Struktur Topik MQTT Baru (v2.0 Firmware)
-Format topik: `AlfaEnergy/<TYPE>/<DEVICE_ID>/<prefix>/...` di mana `<TYPE>` adalah `CT` atau `Plug`, dan `<DEVICE_ID>` adalah 6 digit MAC ESP (contoh: `E62A34`, `B80E68`):
+Format topik: `AlfaEnergy/<TYPE>/<DEVICE_ID>/<prefix>/...` di mana `<TYPE>` adalah `CT` atau `Plug`, dan `<DEVICE_ID>` adalah 6 digit MAC ESP (contoh: `E62A34`, `B80E68`).
+
+**Konvensi Penamaan Dinamis di Dashboard:**
+- Khusus perangkat `CT` & `Plug`, ID dan penamaan default di dashboard dibentuk secara dinamis:
+  - Format Device ID: `<TIPE>-<MAC>` (contoh: `CT-E62A34`, `Plug-B80E68`, `CT-XXXXXX`, `Plug-YYYYYY`).
+  - Berapapun jumlah device baru yang ditambahkan, sistem otomatis mengenali tipe dan MAC-nya.
+- **Inisial (Badge) & Nama Sensor:**
+  - Perangkat **CT**: Inisial badge = **`CT`**, Nama sensor default = **`CT`** (bukan `L1` / `Sensor 1`).
+  - Perangkat **Plug**: Inisial badge = **`PG`**, Nama sensor default = **`Plug`** (bukan `L1` / `Sensor 1`).
+- Perangkat lama (seperti `EM-0001`, `EM-0002`, `MC3`, dll.) tetap mempertahankan ID (`EM-...`) dan inisial sensor aslinya (`L1`, `L2`, dst.) tanpa perubahan.
+
 1. **Telemetri Sensor**:
-   - CT: `AlfaEnergy/CT/<DEVICE_ID>/tele/SENSOR`
-   - Plug: `AlfaEnergy/Plug/<DEVICE_ID>/tele/SENSOR`
+   - CT: `AlfaEnergy/CT/<DEVICE_ID>/tele/SENSOR` $\rightarrow$ Device: `CT-<DEVICE_ID>`, Sensor: `CT`
+   - Plug: `AlfaEnergy/Plug/<DEVICE_ID>/tele/SENSOR` $\rightarrow$ Device: `Plug-<DEVICE_ID>`, Sensor: `PG` (`Plug`)
    - Payload JSON berisi objek `"ENERGY"` (`Voltage`, `Current`, `Power`, `Frequency`, `Total`, `Factor`, `ApparentPower`, `ReactivePower`) dan `"Time"`.
 2. **Status Perangkat**:
    - `AlfaEnergy/<CT|Plug>/<DEVICE_ID>/stat/STATE` dan `AlfaEnergy/<CT|Plug>/<DEVICE_ID>/tele/STATE`

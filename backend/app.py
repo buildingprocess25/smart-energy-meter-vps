@@ -46,11 +46,13 @@ def _on_message(client, userdata, msg):
         payload = msg.payload.decode('utf-8')
         parts = topic.split('/')
         if len(parts) >= 2 and parts[0] in ('energymeter', 'AlfaEnergy'):
-            # Dukungan format baru firmware CT & Plug: AlfaEnergy/<CT|Plug>/<DEVICE_ID>/...
+            # Format dinamis khusus CT & Plug: <TIPE>-<MAC> (contoh: CT-E62A34, Plug-B80E68)
+            # Alat lama (EM-0001, MC3, dll.) tetap mempertahankan ID aslinya
             device_type = None
             if len(parts) >= 4 and parts[0] == 'AlfaEnergy' and parts[1].upper() in ('CT', 'PLUG'):
-                device_type = parts[1]
-                device_id = parts[2].strip().rstrip(':').strip()
+                device_type = 'CT' if parts[1].upper() == 'CT' else 'Plug'
+                raw_mac = parts[2].strip().rstrip(':').strip()
+                device_id = f"{device_type}-{raw_mac}"
                 sub_parts = parts[3:]
             else:
                 device_id = parts[1].strip().rstrip(':').strip()
@@ -147,10 +149,10 @@ def _on_message(client, userdata, msg):
 
                             return metrics
 
-                        # Parsing multi-channel atau single-channel
+                        # Parsing multi-channel atau single-channel (CT -> 'CT', Plug -> 'PG', lainnya -> 'L1')
                         if len(energy_keys) > 1:
                             for i, ekey in enumerate(sorted(energy_keys)):
-                                ph = f"L{i+1}"
+                                ph = f"CT{i+1}" if device_type == 'CT' else (f"PG{i+1}" if device_type == 'Plug' else f"L{i+1}")
                                 if ph not in _mqtt_live_data[device_id]:
                                     _mqtt_live_data[device_id][ph] = {}
                                 _mqtt_live_data[device_id][ph].update(_build_metrics(data[ekey]))
@@ -160,12 +162,12 @@ def _on_message(client, userdata, msg):
                             if array_lens:
                                 num_ch = max(array_lens)
                                 for ch in range(num_ch):
-                                    ph = f"L{ch+1}"
+                                    ph = f"CT{ch+1}" if device_type == 'CT' else (f"PG{ch+1}" if device_type == 'Plug' else f"L{ch+1}")
                                     if ph not in _mqtt_live_data[device_id]:
                                         _mqtt_live_data[device_id][ph] = {}
                                     _mqtt_live_data[device_id][ph].update(_build_metrics(e_obj, ch))
                             else:
-                                ph = "L1"
+                                ph = "CT" if device_type == 'CT' else ("PG" if device_type == 'Plug' else "L1")
                                 if ph not in _mqtt_live_data[device_id]:
                                     _mqtt_live_data[device_id][ph] = {}
                                 _mqtt_live_data[device_id][ph].update(_build_metrics(e_obj))
@@ -340,6 +342,14 @@ def _get_default_sensor_display_name(phase: str) -> str:
     up = phase.upper()
     if up in ('R', 'S', 'T'):
         return f'Phase {up}'
+    if up == 'CT':
+        return 'CT'
+    if up.startswith('CT') and up[2:].isdigit():
+        return f'CT-{int(up[2:])}'
+    if up == 'PG':
+        return 'Plug'
+    if up.startswith('PG') and up[2:].isdigit():
+        return f'Plug-{int(up[2:])}'
     if _PHASE_RE.match(phase):
         return f'Sensor {phase[1:]}'
     m = re.match(r'^([A-Za-z]+)[_-]?(\d+)$', phase)
@@ -1302,9 +1312,19 @@ def list_devices():
                         print(f"Error auto-updating sensors for {did}: {ex}")
 
             for s in sorted(sensors_list, key=lambda item: _phase_sort_key(item.get('phase', ''))):
+                raw_ph = s.get('phase')
+                name = s.get('name')
+                if did.upper().startswith('CT-') and (raw_ph == 'L1' or name in ('Sensor 1', 'L1', 'None', None, '')):
+                    raw_ph = 'CT'
+                    name = 'CT'
+                elif did.lower().startswith('plug-') and (raw_ph == 'L1' or name in ('Sensor 1', 'L1', 'None', None, '')):
+                    raw_ph = 'PG'
+                    name = 'Plug'
+                else:
+                    name = name or _get_default_sensor_display_name(raw_ph)
                 phases.append({
-                    'phase': s.get('phase'),
-                    'name': s.get('name', _get_default_sensor_display_name(s.get('phase', ''))),
+                    'phase': raw_ph,
+                    'name': name,
                     'properties': s.get('properties', []),
                     'enabled': s.get('enabled', True),
                     'color': s.get('color', None)
@@ -1441,7 +1461,15 @@ def control_device_relay(device_id: str):
     if cmd not in ('ON', 'OFF', 'TOGGLE', '1', '0'):
         return jsonify({'ok': False, 'error': 'State harus ON, OFF, atau TOGGLE'}), 400
 
-    topic = f"AlfaEnergy/{device_id}/cmnd/POWER"
+    if device_id.lower().startswith('plug-'):
+        raw_mac = device_id[5:]
+        topic = f"AlfaEnergy/Plug/{raw_mac}/cmnd/POWER"
+    elif device_id.upper().startswith('CT-'):
+        raw_mac = device_id[3:]
+        topic = f"AlfaEnergy/CT/{raw_mac}/cmnd/POWER"
+    else:
+        topic = f"AlfaEnergy/{device_id}/cmnd/POWER"
+
     try:
         _mqtt_client.publish(topic, cmd)
         return jsonify({'ok': True, 'device_id': device_id, 'topic': topic, 'command': cmd})

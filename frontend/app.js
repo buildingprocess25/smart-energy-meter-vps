@@ -245,6 +245,8 @@ const PHASE_STANDARD_COLORS = {
     'R': { line: '#EF4444', bar: 'rgba(239,68,68,0.85)', light: 'rgba(239,68,68,0.15)' },   // Phase R: Red
     'S': { line: '#F59E0B', bar: 'rgba(245,158,11,0.85)', light: 'rgba(245,158,11,0.15)' }, // Phase S: Amber / Yellow
     'T': { line: '#3B82F6', bar: 'rgba(59,130,246,0.85)', light: 'rgba(59,130,246,0.15)' },  // Phase T: Blue
+    'CT': { line: '#0EA5E9', bar: 'rgba(14,165,233,0.85)', light: 'rgba(14,165,233,0.15)' }, // CT: Sky Blue
+    'PG': { line: '#10B981', bar: 'rgba(16,185,129,0.85)', light: 'rgba(16,185,129,0.15)' }, // Plug: Emerald Green
 };
 
 const LOAD_SHORT_BADGES = {
@@ -257,7 +259,9 @@ const LOAD_SHORT_BADGES = {
     'MAIN': 'MN',
     'DISTRIBUTION': 'DB',
     'PRODUCTION': 'PR',
-    'OTHER': 'OT'
+    'OTHER': 'OT',
+    'CT': 'CT',
+    'PG': 'PG'
 };
 
 const LOAD_FULL_NAMES = {
@@ -270,7 +274,9 @@ const LOAD_FULL_NAMES = {
     'MAIN': 'Main Panel',
     'DISTRIBUTION': 'Distribution',
     'PRODUCTION': 'Production',
-    'OTHER': 'Other'
+    'OTHER': 'Other',
+    'CT': 'CT',
+    'PG': 'Plug'
 };
 
 const LOAD_TYPE_COLORS = {
@@ -286,9 +292,11 @@ const LOAD_TYPE_COLORS = {
     'OTHER': { line: '#64748B', bar: 'rgba(100,116,139,0.85)', light: 'rgba(100,116,139,0.15)' }     // Slate
 };
 
-function getPhaseShortBadge(phase) {
+function getPhaseShortBadge(phase, deviceId) {
     if (!phase) return '';
     const pUpper = String(phase).trim().toUpperCase();
+    if (pUpper === 'CT' || (deviceId && deviceId.toUpperCase().startsWith('CT-') && pUpper === 'L1')) return 'CT';
+    if (pUpper === 'PG' || (deviceId && deviceId.toLowerCase().startsWith('plug-') && pUpper === 'L1')) return 'PG';
     if (pUpper === 'R' || pUpper === 'S' || pUpper === 'T') return pUpper;
     if (/^L\d+$/i.test(pUpper)) return pUpper;
     
@@ -306,9 +314,11 @@ function getPhaseShortBadge(phase) {
     return pUpper.slice(0, 3);
 }
 
-function getPhaseDefaultFullName(phase) {
+function getPhaseDefaultFullName(phase, deviceId) {
     if (!phase) return '';
     const pUpper = String(phase).trim().toUpperCase();
+    if (pUpper === 'CT' || (deviceId && deviceId.toUpperCase().startsWith('CT-') && pUpper === 'L1')) return 'CT';
+    if (pUpper === 'PG' || (deviceId && deviceId.toLowerCase().startsWith('plug-') && pUpper === 'L1')) return 'Plug';
     if (pUpper === 'R') return 'Phase R';
     if (pUpper === 'S') return 'Phase S';
     if (pUpper === 'T') return 'Phase T';
@@ -328,7 +338,7 @@ function getPhaseDefaultFullName(phase) {
 function getPhaseLabel(phase) {
     const dev = _deviceListCache.find(d => d.id === selectedDeviceId);
     const sensor = dev?.phases?.find(p => p.phase === phase);
-    return sensor?.name || getPhaseDefaultFullName(phase) || phase;
+    return sensor?.name || getPhaseDefaultFullName(phase, selectedDeviceId) || phase;
 }
 
 function hexToRgba(hex, alpha) {
@@ -1008,8 +1018,8 @@ function updatePhaseSelector(phases) {
     }
     container.innerHTML = enabledPhases.map(p => {
         const phaseObj = dev?.phases?.find(ph => ph.phase === p);
-        const shortBadge = getPhaseShortBadge(p);
-        const customOrFullName = phaseObj?.name || getPhaseDefaultFullName(p);
+        const shortBadge = getPhaseShortBadge(p, selectedDeviceId);
+        const customOrFullName = (phaseObj?.name && phaseObj.name !== 'Sensor 1' && phaseObj.name !== 'L1') ? phaseObj.name : getPhaseDefaultFullName(p, selectedDeviceId);
         const isStandard3P = ['R', 'S', 'T'].includes(p.toUpperCase());
         
         let subText = '';
@@ -2696,9 +2706,9 @@ function renderDeviceList(devices) {
                             onchange="togglePhaseEnabled('${d.id}','${p.phase}',this.checked)">
                         <span class="phase-toggle-track"></span>
                     </label>
-                    <div class="device-phase-badge" style="background:${phaseColor};${isEnabled ? '' : 'opacity:.4'}" title="Sensor ${p.phase}">${getPhaseShortBadge(p.phase)}</div>
+                    <div class="device-phase-badge" style="background:${phaseColor};${isEnabled ? '' : 'opacity:.4'}" title="Sensor ${p.phase}">${getPhaseShortBadge(p.phase, d.id)}</div>
                     <div class="device-phase-info">
-                        <p class="device-phase-name" id="phase-label_${d.id}_${p.phase}" style="${isEnabled ? '' : 'opacity:.45;text-decoration:line-through'}">${p.name || getPhaseDefaultFullName(p.phase)}</p>
+                        <p class="device-phase-name" id="phase-label_${d.id}_${p.phase}" style="${isEnabled ? '' : 'opacity:.45;text-decoration:line-through'}">${p.name && p.name !== 'Sensor 1' && p.name !== 'L1' ? p.name : getPhaseDefaultFullName(p.phase, d.id)}</p>
                         <p class="device-phase-status">${statusHTML}</p>
                     </div>
                     <button class="sensor-color-picker" style="background:${phaseColor}"
@@ -2711,7 +2721,7 @@ function renderDeviceList(devices) {
                     <div class="device-phase-info">
                         <div class="device-phase-edit-field">
                             <input type="text" class="device-phase-rename-input" id="phase-rename_${d.id}_${p.phase}"
-                                value="${p.name || getPhaseDefaultFullName(p.phase)}" maxlength="40" autocomplete="off"
+                                value="${p.name && p.name !== 'Sensor 1' && p.name !== 'L1' ? p.name : getPhaseDefaultFullName(p.phase, d.id)}" maxlength="40" autocomplete="off"
                                 onkeydown="if(event.key==='Enter') savePhaseRename('${d.id}','${p.phase}'); else if(event.key==='Escape') cancelRenamePhase('${d.id}','${p.phase}')">
                         </div>
                     </div>
@@ -3590,11 +3600,12 @@ function initMQTT() {
                 let devId = parts[1];
                 let subParts = parts.slice(2);
                 if (parts.length >= 4 && parts[0] === 'AlfaEnergy' && (parts[1].toUpperCase() === 'CT' || parts[1].toUpperCase() === 'PLUG')) {
-                    devId = parts[2];
+                    const devType = parts[1].toUpperCase() === 'CT' ? 'CT' : 'Plug';
+                    devId = `${devType}-${parts[2]}`;
                     subParts = parts.slice(3);
                 }
 
-                if (devId === selectedDeviceId) {
+                if (devId === selectedDeviceId || (parts[2] && parts[2] === selectedDeviceId)) {
                     if (!rawRealtimeData) {
                         rawRealtimeData = {};
                     }
@@ -3607,7 +3618,12 @@ function initMQTT() {
                         try {
                             const data = JSON.parse(payload);
                             const eObj = data.ENERGY || data.ENERGY1 || data.PZEM || {};
-                            const phase = 'L1';
+                            let phase = 'L1';
+                            if (parts[1].toUpperCase() === 'CT' || (devId && devId.toUpperCase().startsWith('CT-'))) {
+                                phase = 'CT';
+                            } else if (parts[1].toUpperCase() === 'PLUG' || (devId && devId.toLowerCase().startsWith('plug-'))) {
+                                phase = 'PG';
+                            }
                             _phaseLastSeen[phase] = Date.now();
                             if (!rawRealtimeData[phase]) rawRealtimeData[phase] = {};
                             if (eObj.Voltage != null) rawRealtimeData[phase]['Voltage (V)'] = parseFloat(eObj.Voltage) || 0;
@@ -3731,6 +3747,14 @@ function _subscribeToDevice(deviceId) {
         `AlfaEnergy/+/${deviceId}/#`,
         `energymeter/${deviceId}/#`
     ];
+
+    if (deviceId.toUpperCase().startsWith('CT-')) {
+        const rawMac = deviceId.slice(3);
+        _subscribedTopic.push(`AlfaEnergy/CT/${rawMac}/#`);
+    } else if (deviceId.toLowerCase().startsWith('plug-')) {
+        const rawMac = deviceId.slice(5);
+        _subscribedTopic.push(`AlfaEnergy/Plug/${rawMac}/#`);
+    }
 
     _subscribedTopic.forEach(top => {
         _mqttClient.subscribe(top, (err) => {
