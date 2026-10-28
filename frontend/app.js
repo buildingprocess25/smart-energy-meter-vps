@@ -1019,7 +1019,7 @@ function updatePhaseSelector(phases) {
     container.innerHTML = enabledPhases.map(p => {
         const phaseObj = dev?.phases?.find(ph => ph.phase === p);
         const shortBadge = getPhaseShortBadge(p, selectedDeviceId);
-        const customOrFullName = (phaseObj?.name && phaseObj.name !== 'Sensor 1' && phaseObj.name !== 'L1') ? phaseObj.name : getPhaseDefaultFullName(p, selectedDeviceId);
+        const customOrFullName = phaseObj?.name || getPhaseDefaultFullName(p, selectedDeviceId);
         const isStandard3P = ['R', 'S', 'T'].includes(p.toUpperCase());
         
         let subText = '';
@@ -2708,7 +2708,7 @@ function renderDeviceList(devices) {
                     </label>
                     <div class="device-phase-badge" style="background:${phaseColor};${isEnabled ? '' : 'opacity:.4'}" title="Sensor ${p.phase}">${getPhaseShortBadge(p.phase, d.id)}</div>
                     <div class="device-phase-info">
-                        <p class="device-phase-name" id="phase-label_${d.id}_${p.phase}" style="${isEnabled ? '' : 'opacity:.45;text-decoration:line-through'}">${p.name && p.name !== 'Sensor 1' && p.name !== 'L1' ? p.name : getPhaseDefaultFullName(p.phase, d.id)}</p>
+                        <p class="device-phase-name" id="phase-label_${d.id}_${p.phase}" style="${isEnabled ? '' : 'opacity:.45;text-decoration:line-through'}">${p.name || getPhaseDefaultFullName(p.phase, d.id)}</p>
                         <p class="device-phase-status">${statusHTML}</p>
                     </div>
                     <button class="sensor-color-picker" style="background:${phaseColor}"
@@ -2721,7 +2721,7 @@ function renderDeviceList(devices) {
                     <div class="device-phase-info">
                         <div class="device-phase-edit-field">
                             <input type="text" class="device-phase-rename-input" id="phase-rename_${d.id}_${p.phase}"
-                                value="${p.name && p.name !== 'Sensor 1' && p.name !== 'L1' ? p.name : getPhaseDefaultFullName(p.phase, d.id)}" maxlength="40" autocomplete="off"
+                                value="${p.name || getPhaseDefaultFullName(p.phase, d.id)}" maxlength="40" autocomplete="off"
                                 onkeydown="if(event.key==='Enter') savePhaseRename('${d.id}','${p.phase}'); else if(event.key==='Escape') cancelRenamePhase('${d.id}','${p.phase}')">
                         </div>
                     </div>

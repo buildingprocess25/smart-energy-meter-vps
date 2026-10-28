@@ -1280,7 +1280,7 @@ def list_devices():
             cur.execute("SELECT id, name, online, last_seen, sensors, store_id, latitude, longitude FROM devices")
             rows = cur.fetchall()
         for row in rows:
-            did, name, online, last_seen, sensors_json, store_id, lat, lng = row
+            did, device_name, online, last_seen, sensors_json, store_id, lat, lng = row
             phases = []
             sensors_list = []
             if sensors_json:
@@ -1313,25 +1313,25 @@ def list_devices():
 
             for s in sorted(sensors_list, key=lambda item: _phase_sort_key(item.get('phase', ''))):
                 raw_ph = s.get('phase')
-                name = s.get('name')
-                if did.upper().startswith('CT-') and (raw_ph == 'L1' or name in ('Sensor 1', 'L1', 'None', None, '')):
+                s_name = s.get('name')
+                if did.upper().startswith('CT-') and (raw_ph == 'L1' or s_name in ('Sensor 1', 'L1', 'None', None, '')):
                     raw_ph = 'CT'
-                    name = 'CT'
-                elif did.lower().startswith('plug-') and (raw_ph == 'L1' or name in ('Sensor 1', 'L1', 'None', None, '')):
+                    s_name = 'CT'
+                elif did.lower().startswith('plug-') and (raw_ph == 'L1' or s_name in ('Sensor 1', 'L1', 'None', None, '')):
                     raw_ph = 'PG'
-                    name = 'Plug'
+                    s_name = 'Plug'
                 else:
-                    name = name or _get_default_sensor_display_name(raw_ph)
+                    s_name = s_name or _get_default_sensor_display_name(raw_ph)
                 phases.append({
                     'phase': raw_ph,
-                    'name': name,
+                    'name': s_name,
                     'properties': s.get('properties', []),
                     'enabled': s.get('enabled', True),
                     'color': s.get('color', None)
                 })
             devices.append({
                 'id': did,
-                'name': name,
+                'name': device_name,
                 'online': online,
                 'lastSeen': last_seen,
                 'phases': phases,
