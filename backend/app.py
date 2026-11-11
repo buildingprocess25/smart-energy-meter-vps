@@ -45,11 +45,11 @@ def _on_message(client, userdata, msg):
         topic = msg.topic
         payload = msg.payload.decode('utf-8')
         parts = topic.split('/')
-        if len(parts) >= 2 and parts[0] in ('energymeter', 'AlfaEnergy'):
+        if len(parts) >= 2 and parts[0] in ('energymeter', 'AlfaEnergy', 'SpartaEnergy'):
             # Format dinamis khusus CT & Plug: <TIPE>-<MAC> (contoh: CT-E62A34, Plug-B80E68)
             # Alat lama (EM-0001, MC3, dll.) tetap mempertahankan ID aslinya
             device_type = None
-            if len(parts) >= 4 and parts[0] == 'AlfaEnergy' and parts[1].upper() in ('CT', 'PLUG'):
+            if len(parts) >= 4 and parts[0] in ('AlfaEnergy', 'SpartaEnergy') and parts[1].upper() in ('CT', 'PLUG'):
                 device_type = 'CT' if parts[1].upper() == 'CT' else 'Plug'
                 raw_mac = parts[2].strip().rstrip(':').strip()
                 device_id = f"{device_type}-{raw_mac}"
@@ -58,7 +58,7 @@ def _on_message(client, userdata, msg):
                 device_id = parts[1].strip().rstrip(':').strip()
                 sub_parts = parts[2:]
 
-            if not device_id or device_id == 'all':
+            if not device_id or device_id == 'all' or (device_type and raw_mac.lower() == 'all'):
                 return
             _mqtt_last_seen[device_id] = time.time()
             if device_id not in _mqtt_live_data:
@@ -67,6 +67,7 @@ def _on_message(client, userdata, msg):
                 if 'status' not in _mqtt_live_data[device_id]:
                     _mqtt_live_data[device_id]['status'] = {}
                 _mqtt_live_data[device_id]['status']['device_type'] = device_type
+                _mqtt_live_data[device_id]['status']['prefix'] = parts[0]
 
             # Case 1: Timestamp -> AlfaEnergy/EM-0001/Timestamp atau energymeter/MC3/Timestamp
             if len(sub_parts) == 1 and sub_parts[0] == 'Timestamp':
@@ -318,6 +319,7 @@ def _start_mqtt():
             client.tls_set()
 
         def on_connect(c, userdata, flags, rc, properties=None):
+            c.subscribe("SpartaEnergy/#")
             c.subscribe("AlfaEnergy/#")
             c.subscribe("energymeter/#")
         client.on_connect = on_connect
@@ -1452,7 +1454,7 @@ def delete_device_permanently(device_id: str):
 
 @app.route('/api/devices/<device_id>/relay', methods=['POST'])
 def control_device_relay(device_id: str):
-    """Kontrol relay Smart Plug via MQTT topik AlfaEnergy/<device_id>/cmnd/POWER."""
+    """Kontrol relay Smart Plug via MQTT topik SpartaEnergy/Plug/<MAC>/cmnd/POWER atau AlfaEnergy/<device_id>/cmnd/POWER."""
     global _mqtt_client
     if not _mqtt_client:
         return jsonify({'ok': False, 'error': 'MQTT client tidak aktif'}), 503
@@ -1461,18 +1463,29 @@ def control_device_relay(device_id: str):
     if cmd not in ('ON', 'OFF', 'TOGGLE', '1', '0'):
         return jsonify({'ok': False, 'error': 'State harus ON, OFF, atau TOGGLE'}), 400
 
+    pref = _mqtt_live_data.get(device_id, {}).get('status', {}).get('prefix')
+    prefixes = ['SpartaEnergy', 'AlfaEnergy']
+    if pref and pref in prefixes:
+        prefixes.remove(pref)
+        prefixes.insert(0, pref)
+
+    topics = []
     if device_id.lower().startswith('plug-'):
         raw_mac = device_id[5:]
-        topic = f"AlfaEnergy/Plug/{raw_mac}/cmnd/POWER"
+        for p in prefixes:
+            topics.append(f"{p}/Plug/{raw_mac}/cmnd/POWER")
     elif device_id.upper().startswith('CT-'):
         raw_mac = device_id[3:]
-        topic = f"AlfaEnergy/CT/{raw_mac}/cmnd/POWER"
+        for p in prefixes:
+            topics.append(f"{p}/CT/{raw_mac}/cmnd/POWER")
     else:
-        topic = f"AlfaEnergy/{device_id}/cmnd/POWER"
+        for p in prefixes:
+            topics.append(f"{p}/{device_id}/cmnd/POWER")
 
     try:
-        _mqtt_client.publish(topic, cmd)
-        return jsonify({'ok': True, 'device_id': device_id, 'topic': topic, 'command': cmd})
+        for t in topics:
+            _mqtt_client.publish(t, cmd)
+        return jsonify({'ok': True, 'device_id': device_id, 'topic': topics[0], 'command': cmd})
     except Exception as e:
         return jsonify({'ok': False, 'error': str(e)}), 500
 
@@ -1758,8 +1771,17 @@ def capture_start():
         # MQTT publish & save state file dijalankan DI LUAR LOCK
         if _mqtt_client:
             try:
+                _mqtt_client.publish(f"SpartaEnergy/{did}/cmd/resetEnergy", "1")
                 _mqtt_client.publish(f"AlfaEnergy/{did}/cmd/resetEnergy", "1")
                 _mqtt_client.publish(f"energymeter/{did}/cmd/resetEnergy", "1")
+                if did.lower().startswith('plug-'):
+                    mac = did[5:]
+                    _mqtt_client.publish(f"SpartaEnergy/Plug/{mac}/cmnd/EnergyReset", "0")
+                    _mqtt_client.publish(f"AlfaEnergy/Plug/{mac}/cmnd/EnergyReset", "0")
+                elif did.upper().startswith('CT-'):
+                    mac = did[3:]
+                    _mqtt_client.publish(f"SpartaEnergy/CT/{mac}/cmnd/EnergyReset", "0")
+                    _mqtt_client.publish(f"AlfaEnergy/CT/{mac}/cmnd/EnergyReset", "0")
             except Exception:
                 pass
         _save_capture_states()

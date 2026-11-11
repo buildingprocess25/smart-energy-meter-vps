@@ -128,34 +128,37 @@ AlfaEnergy/<DEVICE_ID>/<MODE>/...
 
 ---
 
-## 8. Spesifikasi Firmware AlfaEnergy CT & Plug (Tasmota-Based)
-Perangkat yang menggunakan firmware di folder `AlfaEnergy/firmware/` (menggantikan `AlfaEnergy/CTandPlug/`):
-- `AlfaEnergy_CT.bin` (Tasmota32 ESP32)
-- `AlfaEnergy_Plug.bin` (Tasmota32C3 ESP32-C3)
+## 8. Spesifikasi Firmware CT & Plug (Tasmota-Based - SpartaEnergy & AlfaEnergy)
+Perangkat yang menggunakan firmware Tasmota (v2.0):
+- `SpartaEnergy_CT.factory.bin` / `AlfaEnergy_CT.bin` (Tasmota32 ESP32)
+- `SpartaEnergy_Plug.factory.bin` / `AlfaEnergy_Plug.bin` (Tasmota32C3 ESP32-C3)
 
 ### A. Struktur Topik MQTT Baru (v2.0 Firmware)
-Format topik: `AlfaEnergy/<TYPE>/<DEVICE_ID>/<prefix>/...` di mana `<TYPE>` adalah `CT` atau `Plug`, dan `<DEVICE_ID>` adalah 6 digit MAC ESP (contoh: `E62A34`, `B80E68`).
+Format topik mendukung dua prefix secara berdampingan (*dual compatibility*):
+- Standar Baru (v2.0): **`SpartaEnergy/<TYPE>/<DEVICE_ID>/<prefix>/...`**
+- Standar Transisi: **`AlfaEnergy/<TYPE>/<DEVICE_ID>/<prefix>/...`**
+di mana `<TYPE>` adalah `CT` atau `Plug`, dan `<DEVICE_ID>` adalah 6 digit MAC ESP (contoh: `E62A34`, `B80E68`).
 
 **Konvensi Penamaan Dinamis di Dashboard:**
 - Khusus perangkat `CT` & `Plug`, ID dan penamaan default di dashboard dibentuk secara dinamis:
   - Format Device ID: `<TIPE>-<MAC>` (contoh: `CT-E62A34`, `Plug-B80E68`, `CT-XXXXXX`, `Plug-YYYYYY`).
-  - Berapapun jumlah device baru yang ditambahkan, sistem otomatis mengenali tipe dan MAC-nya.
+  - Berapapun jumlah device baru yang ditambahkan, sistem otomatis mengenali tipe dan MAC-nya baik melalui prefix `SpartaEnergy` maupun `AlfaEnergy`.
 - **Inisial (Badge) & Nama Sensor:**
   - Perangkat **CT**: Inisial badge = **`CT`**, Nama sensor default = **`CT`** (bukan `L1` / `Sensor 1`).
   - Perangkat **Plug**: Inisial badge = **`PG`**, Nama sensor default = **`Plug`** (bukan `L1` / `Sensor 1`).
 - Perangkat lama (seperti `EM-0001`, `EM-0002`, `MC3`, dll.) tetap mempertahankan ID (`EM-...`) dan inisial sensor aslinya (`L1`, `L2`, dst.) tanpa perubahan.
 
 1. **Telemetri Sensor**:
-   - CT: `AlfaEnergy/CT/<DEVICE_ID>/tele/SENSOR` $\rightarrow$ Device: `CT-<DEVICE_ID>`, Sensor: `CT`
-   - Plug: `AlfaEnergy/Plug/<DEVICE_ID>/tele/SENSOR` $\rightarrow$ Device: `Plug-<DEVICE_ID>`, Sensor: `PG` (`Plug`)
+   - CT: `SpartaEnergy/CT/<DEVICE_ID>/tele/SENSOR` (atau `AlfaEnergy/...`) $\rightarrow$ Device: `CT-<DEVICE_ID>`, Sensor: `CT`
+   - Plug: `SpartaEnergy/Plug/<DEVICE_ID>/tele/SENSOR` (atau `AlfaEnergy/...`) $\rightarrow$ Device: `Plug-<DEVICE_ID>`, Sensor: `PG` (`Plug`)
    - Payload JSON berisi objek `"ENERGY"` (`Voltage`, `Current`, `Power`, `Frequency`, `Total`, `Factor`, `ApparentPower`, `ReactivePower`) dan `"Time"`.
 2. **Status Perangkat**:
-   - `AlfaEnergy/<CT|Plug>/<DEVICE_ID>/stat/STATE` dan `AlfaEnergy/<CT|Plug>/<DEVICE_ID>/tele/STATE`
+   - `<SpartaEnergy|AlfaEnergy>/<CT|Plug>/<DEVICE_ID>/stat/STATE` dan `tele/STATE`
    - Payload JSON berisi `POWER` (relay), `Uptime`, `Heap`, `Wifi` (SSID, RSSI, Signal).
 3. **Status Relay Smart Plug**:
-   - `AlfaEnergy/Plug/<DEVICE_ID>/stat/POWER` / `stat/RESULT`
+   - `<SpartaEnergy|AlfaEnergy>/Plug/<DEVICE_ID>/stat/POWER` / `stat/RESULT`
 4. **Kontrol Relay Smart Plug**:
-   - `AlfaEnergy/Plug/<DEVICE_ID>/cmnd/POWER` (Payload: `ON`, `OFF`, `TOGGLE`).
+   - `SpartaEnergy/Plug/<DEVICE_ID>/cmnd/POWER` & `AlfaEnergy/Plug/<DEVICE_ID>/cmnd/POWER` (Payload: `ON`, `OFF`, `TOGGLE`).
 
 ---
 

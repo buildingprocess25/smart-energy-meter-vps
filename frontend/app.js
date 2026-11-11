@@ -3596,10 +3596,10 @@ function initMQTT() {
         try {
             const payload = message.toString();
             const parts = topic.split('/');
-            if (parts.length >= 2 && (parts[0] === 'energymeter' || parts[0] === 'AlfaEnergy')) {
+            if (parts.length >= 2 && (parts[0] === 'energymeter' || parts[0] === 'AlfaEnergy' || parts[0] === 'SpartaEnergy')) {
                 let devId = parts[1];
                 let subParts = parts.slice(2);
-                if (parts.length >= 4 && parts[0] === 'AlfaEnergy' && (parts[1].toUpperCase() === 'CT' || parts[1].toUpperCase() === 'PLUG')) {
+                if (parts.length >= 4 && (parts[0] === 'AlfaEnergy' || parts[0] === 'SpartaEnergy') && (parts[1].toUpperCase() === 'CT' || parts[1].toUpperCase() === 'PLUG')) {
                     const devType = parts[1].toUpperCase() === 'CT' ? 'CT' : 'Plug';
                     devId = `${devType}-${parts[2]}`;
                     subParts = parts.slice(3);
@@ -3743,6 +3743,8 @@ function _subscribeToDevice(deviceId) {
     }
 
     _subscribedTopic = [
+        `SpartaEnergy/${deviceId}/#`,
+        `SpartaEnergy/+/${deviceId}/#`,
         `AlfaEnergy/${deviceId}/#`,
         `AlfaEnergy/+/${deviceId}/#`,
         `energymeter/${deviceId}/#`
@@ -3750,9 +3752,11 @@ function _subscribeToDevice(deviceId) {
 
     if (deviceId.toUpperCase().startsWith('CT-')) {
         const rawMac = deviceId.slice(3);
+        _subscribedTopic.push(`SpartaEnergy/CT/${rawMac}/#`);
         _subscribedTopic.push(`AlfaEnergy/CT/${rawMac}/#`);
     } else if (deviceId.toLowerCase().startsWith('plug-')) {
         const rawMac = deviceId.slice(5);
+        _subscribedTopic.push(`SpartaEnergy/Plug/${rawMac}/#`);
         _subscribedTopic.push(`AlfaEnergy/Plug/${rawMac}/#`);
     }
 
