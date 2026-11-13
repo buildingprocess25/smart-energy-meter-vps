@@ -2740,6 +2740,15 @@ function renderDeviceList(devices) {
             ? `<span class="device-store-tag" title="${_escapeAttr(d.name)}">🏢 ${d.name}</span>`
             : `<span class="device-store-unassigned-tag" onclick="startRenameDevice('${d.id}')" title="Klik untuk memilih toko">⚠️ Belum ada toko (klik untuk pilih)</span>`;
 
+        const isSyncing = d.bufferSync && d.bufferSync.status === 'SYNCING';
+        const syncBadgeHTML = isSyncing
+            ? `<span style="background:rgba(245,158,11,0.18);color:#f59e0b;border:1px solid rgba(245,158,11,0.4);font-size:9.5px;font-weight:700;padding:1px 6px;border-radius:4px;display:inline-flex;align-items:center;gap:4px" title="Sedang menyinkronkan data offline buffer LittleFS (${d.bufferSync.replayed || 0}/${d.bufferSync.total || 0})"><span>🔄</span> SYNC (${d.bufferSync.replayed || 0}/${d.bufferSync.total || 0})</span>`
+            : '';
+
+        const subInfoHTML = isSyncing
+            ? `<span style="color:#f59e0b;font-weight:600">Menyinkronkan data offline buffer (${d.bufferSync.replayed || 0}/${d.bufferSync.total || 0})...</span>`
+            : `${d.phaseCount || 0} Sensor · Last seen: ${d.lastSeen || '---'}`;
+
         return `
         <div class="device-item" id="device-item_${d.id}">
             <div class="device-view-mode" id="view_${d.id}">
@@ -2750,8 +2759,9 @@ function renderDeviceList(devices) {
                             <strong class="device-id-title">${d.id}</strong>
                             ${storeTagHTML}
                             ${recBadgeHTML}
+                            ${syncBadgeHTML}
                         </div>
-                        <p class="device-item-id">${d.phaseCount || 0} Sensor · Last seen: ${d.lastSeen || '---'}</p>
+                        <p class="device-item-id">${subInfoHTML}</p>
                     </div>
                 </div>
                 <div style="display:flex;gap:4px">
