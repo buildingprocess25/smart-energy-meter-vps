@@ -1145,8 +1145,13 @@ def get_history_buffer(device_id: str):
         with get_db_cursor() as cur:
             cur.execute("""
                 SELECT phase, epoch, voltage, current, power, frequency, energy, power_factor
-                FROM telemetry
-                WHERE device_id = %s AND epoch >= %s
+                FROM (
+                    SELECT phase, epoch, voltage, current, power, frequency, energy, power_factor
+                    FROM telemetry
+                    WHERE device_id = %s AND epoch >= %s
+                    ORDER BY epoch DESC
+                    LIMIT 2400
+                ) sub
                 ORDER BY epoch ASC
             """, (device_id, cutoff_ms))
             rows = cur.fetchall()
@@ -2507,7 +2512,7 @@ def get_device_chart_data(device_id: str):
         date_str = request.args.get('date')
         range_type = request.args.get('range', 'day')
         
-        if not date_str:
+        if not date_str or date_str in ('null', 'undefined', ''):
             date_str = datetime.now(_WIB).strftime('%d/%m/%Y')
             
         if '-' in date_str:

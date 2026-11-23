@@ -126,11 +126,16 @@ async function _resyncLiveBuffer(deviceId) {
             }
         });
 
-        while (chartLabels.length > MAX_DATA_POINTS) {
-            chartLabels.shift();
-            chartTimestamps.shift();
+        if (chartLabels.length > MAX_DATA_POINTS) {
+            const excess = chartLabels.length - MAX_DATA_POINTS;
+            chartLabels = chartLabels.slice(excess);
+            chartTimestamps = chartTimestamps.slice(excess);
             Object.keys(phaseChartData).forEach(ph => {
-                PARAM_KEYS.forEach(k => { phaseChartData[ph]?.[k]?.shift(); });
+                PARAM_KEYS.forEach(k => {
+                    if (phaseChartData[ph]?.[k]?.length) {
+                        phaseChartData[ph][k] = phaseChartData[ph][k].slice(excess);
+                    }
+                });
             });
         }
         _rafDirty = true;
@@ -176,7 +181,7 @@ function _doRender() {
     _rafDirty = false;
     if (!realtimeChart || !_pageVisible || timeFilter !== 'all' || _userIsZoomed) return;
     const enabledKeys = _getEnabledPhaseKeys();
-    const phases = enabledKeys.slice().sort((a, b) => parseInt(a.slice(1)) - parseInt(b.slice(1)));
+    const phases = enabledKeys.slice().sort(_phaseSortCompare);
     if (!phases.length) return;
     const total = chartLabels.length;
     if (total === 0) return;
@@ -194,7 +199,7 @@ function _doRender() {
         }
         const sliced = values.slice(start);
         const labelName = getPhaseLabel(phase);
-        const ds = realtimeChart.data.datasets.find(d => d.label === labelName);
+        const ds = realtimeChart.data.datasets.find(d => d._phaseKey === phase || d.label === labelName);
         if (ds) {
             ds.data = sliced;
             slicedDatasets.push({ data: sliced });
@@ -227,6 +232,7 @@ function _rebuildChart(animate = false) {
         _morphChartStructure(animate);
     }
     _startAggRebuild();
+    _fadeChartIn();
 }
 let _lastChartMinute = -1;
 let _lastChartHour = -1;
@@ -1312,12 +1318,14 @@ function _refreshDayChartFromDB() {
     realtimeChart.update('none');
     _fadeChartIn();
 }
+let _dayListenerDate = null;
 function _attachDayListener(deviceId) {
-    if (_dayListenerAttached === deviceId) {
+    if (_dayListenerAttached === deviceId && _dayListenerDate === chartTargetDate) {
         if (timeFilter === 'week') fetchChartDataFromServer();
         return;
     }
     _dayListenerAttached = deviceId;
+    _dayListenerDate = chartTargetDate;
     fetchChartDataFromServer();
 }
 function _refreshWeekChartFromDB() {
@@ -1504,7 +1512,7 @@ function onHiddenDateChange() {
     updateDateNavigatorUI();
 
     if (timeFilter === 'day' && selectedDeviceId) _attachHourlyListener(selectedDeviceId);
-    if (timeFilter === 'week' && selectedDeviceId && realtimeChart) _refreshWeekChartFromDB();
+    if (timeFilter === 'week' && selectedDeviceId) fetchChartDataFromServer();
 }
 
 function shiftChartDate(daysDirection) {
@@ -1531,7 +1539,7 @@ function shiftChartDate(daysDirection) {
     updateDateNavigatorUI();
 
     if (timeFilter === 'day' && selectedDeviceId) _attachHourlyListener(selectedDeviceId);
-    if (timeFilter === 'week' && selectedDeviceId && realtimeChart) _refreshWeekChartFromDB();
+    if (timeFilter === 'week' && selectedDeviceId) fetchChartDataFromServer();
 }
 
 function setTimeFilter(filter) {
@@ -1571,6 +1579,7 @@ function setTimeFilter(filter) {
     if (filter === 'day' && selectedDeviceId) _attachHourlyListener(selectedDeviceId);
     if (filter === 'week' && selectedDeviceId) _attachDayListener(selectedDeviceId);
     if (filter === 'session' && selectedDeviceId) loadChartSessionsDropdown();
+    if (filter === 'all' && selectedDeviceId && chartLabels.length === 0) _chartInit(selectedDeviceId);
 
     _rebuildChart(false);
 }
@@ -1789,7 +1798,7 @@ function _formatTimestampForChart(ts) {
 
 function getAllPhaseDatasets() {
     const enabledKeys = _getEnabledPhaseKeys();
-    const allPhases = enabledKeys.slice().sort((a, b) => parseInt(a.slice(1)) - parseInt(b.slice(1)));
+    const allPhases = enabledKeys.slice().sort(_phaseSortCompare);
     if (!allPhases.length) return { labels: [], datasets: [] };
 
     if (timeFilter === 'session') {
@@ -1958,7 +1967,7 @@ function initChart() {
         const visible = Math.min(_visiblePoints, total);
         const start = Math.max(0, total - visible);
         const enabledKeys = _getEnabledPhaseKeys();
-        const phases = enabledKeys.slice().sort((a, b) => parseInt(a.slice(1)) - parseInt(b.slice(1)));
+        const phases = enabledKeys.slice().sort(_phaseSortCompare);
         initLabels = chartLabels.slice(start);
         initDatasets = phases.map(phase => {
             const colors = getPhaseColors(phase);
@@ -2158,6 +2167,7 @@ function initChart() {
         if (!_ttDrag.active && !_ttDrag.pinned) hideIscTooltip();
     });
     _initChartGestures(realtimeChart);
+    _fadeChartIn();
 }
 const CHART_INTERVAL_MS = 5000;
 let _chartTimer = null;
@@ -2174,10 +2184,10 @@ function _chartPush() {
     const online = isConnected && !!rawRealtimeData;
     // Kumpulkan semua phase dari live data + last known cache
     const livePhasesSet = new Set(online ? _detectPhaseKeys(rawRealtimeData) : []);
-    const cachedPhasesSet = new Set(Object.keys(_lastKnownPhaseData).filter(k => /^L\d+$/.test(k)));
+    const cachedPhasesSet = new Set(Object.keys(_lastKnownPhaseData).filter(k => _isValidPhaseKeyJS(k)));
     const enabledPhases = new Set(_getEnabledPhaseKeys());
     const allPhases = new Set([...livePhasesSet, ...cachedPhasesSet, ...enabledPhases]);
-    let phases = [...allPhases].sort((a, b) => parseInt(a.slice(1)) - parseInt(b.slice(1)));
+    let phases = [...allPhases].sort(_phaseSortCompare);
     if (!phases.length) phases = ['L1'];
     const point = { ts };
     phases.forEach(ph => {
@@ -2377,11 +2387,16 @@ async function _chartInit(deviceId) {
     }
 
     // Buang data yang lebih tua dari MAX_DATA_POINTS setelah merge
-    while (chartLabels.length > MAX_DATA_POINTS) {
-        chartLabels.shift();
-        chartTimestamps.shift();
+    if (chartLabels.length > MAX_DATA_POINTS) {
+        const excess = chartLabels.length - MAX_DATA_POINTS;
+        chartLabels = chartLabels.slice(excess);
+        chartTimestamps = chartTimestamps.slice(excess);
         Object.keys(phaseChartData).forEach(ph => {
-            PARAM_KEYS.forEach(k => { phaseChartData[ph]?.[k]?.shift(); });
+            PARAM_KEYS.forEach(k => {
+                if (phaseChartData[ph]?.[k]?.length) {
+                    phaseChartData[ph][k] = phaseChartData[ph][k].slice(excess);
+                }
+            });
         });
     }
 
@@ -2502,7 +2517,7 @@ function _morphChartStructure(animate = true) {
         const visible = Math.min(_visiblePoints, total);
         const start = Math.max(0, total - visible);
         const enabledKeys = _getEnabledPhaseKeys();
-        const phases = enabledKeys.slice().sort((a, b) => parseInt(a.slice(1)) - parseInt(b.slice(1)));
+        const phases = enabledKeys.slice().sort(_phaseSortCompare);
         realtimeChart.data.labels = chartLabels.slice(start);
         realtimeChart.data.datasets = phases.map(phase => {
             const colors = getPhaseColors(phase);
@@ -2559,6 +2574,7 @@ function _morphChartStructure(animate = true) {
         realtimeChart.options.animation = false;
     }
     realtimeChart.update();
+    _fadeChartIn();
     if (animate && timeFilter === 'all') {
         setTimeout(() => {
             if (realtimeChart) realtimeChart.options.animation = false;
@@ -3320,20 +3336,30 @@ async function onDeviceChange(deviceId) {
     [DOM.deviceSelect, DOM.summaryDeviceSelect].forEach(sel => {
         if (sel && sel.value !== deviceId) sel.value = deviceId;
     });
-    if (_prevDeviceId) {
-        _hourlyListenerAttached = null;
-        _dayListenerAttached = null;
-        hourlyHistoryData = {};
-        dailyHistoryData = {};
-    }
+    _prevDeviceId = selectedDeviceId;
+    _hourlyListenerAttached = null;
+    _dayListenerAttached = null;
+    _hourlyListenerDate = null;
+    _dayListenerDate = null;
+    hourlyHistoryData = {};
+    dailyHistoryData = {};
     if (_chartTimer) { clearInterval(_chartTimer); _chartTimer = null; }
     if (_liveBufferPollTimer) { clearInterval(_liveBufferPollTimer); _liveBufferPollTimer = null; }
     selectedDeviceId = deviceId;
     try { localStorage.setItem('sem_last_device_id', deviceId); } catch (_) { }
+
+    _hiddenPhases.clear();
+    _userIsZoomed = false;
+    if (typeof resetChartZoom === 'function') resetChartZoom();
+
     const activeDev = _deviceListCache.find(d => d.id === deviceId);
     selectedDeviceName = activeDev && activeDev.name && activeDev.name !== activeDev.id ? `${activeDev.id} ${activeDev.name}` : deviceId;
-    selectedPhase = '';
-    updatePhaseSelector([]);
+
+    // Set immediate phase from cache if available
+    const initialPhases = (activeDev?.phases || []).filter(p => p.enabled !== false).map(p => p.phase);
+    selectedPhase = initialPhases[0] || '';
+    updatePhaseSelector(initialPhases);
+
     resetChartData();
     rawRealtimeData = null;
     _phaseLastSeen = {}; // reset per-phase timestamps on device change
@@ -3356,14 +3382,45 @@ async function onDeviceChange(deviceId) {
     lastSensorValues = null;
     historyData = []; recordsBySession = {}; sessionsData = {};
     buildSessionUI();
+
+    // Fetch and initialize sensors for new device in background
     fetch(`/api/devices/${deviceId}/init-sensors`, { method: 'POST' })
-        .then(r => r.json()).then(json => { if (json.phases) loadDevices(); }).catch(() => { });
-    _attachRealtimeListener(deviceId);
+        .then(r => r.json())
+        .then(async json => {
+            if (json && json.phases) {
+                await loadDevices(false);
+                const updatedDev = _deviceListCache.find(d => d.id === deviceId);
+                if (updatedDev?.phases?.length) {
+                    const freshPhases = updatedDev.phases.filter(p => p.enabled !== false).map(p => p.phase);
+                    if (!selectedPhase || !freshPhases.includes(selectedPhase)) {
+                        selectedPhase = freshPhases[0] || '';
+                    }
+                    updatePhaseSelector(freshPhases);
+                    _rebuildChart(false);
+                }
+            }
+        })
+        .catch(() => { });
+
+    // Live subscriptions
+    startLiveBufferPolling(deviceId);
+    initMQTT();
+    _subscribeToDevice(deviceId);
+
+    // Chart data loading based on current timeFilter
+    if (timeFilter === 'day') {
+        _attachHourlyListener(deviceId);
+    } else if (timeFilter === 'week') {
+        _attachDayListener(deviceId);
+    } else if (timeFilter === 'session') {
+        loadChartSessionsDropdown();
+    } else {
+        _chartInit(deviceId);
+    }
+
     _attachHistoryListener(deviceId);
     _attachDeviceNameListener(deviceId);
     _attachPhasesListener(deviceId);
-    _attachHourlyListener(deviceId);
-    _attachDayListener(deviceId);
     if (activeDev) renderDeviceList([activeDev]);
 }
 function startRenamePhase(deviceId, phase) {
