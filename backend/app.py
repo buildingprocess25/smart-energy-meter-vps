@@ -1,9 +1,10 @@
 from __future__ import annotations
-import os, re, threading, time, hashlib, json, logging, contextlib
+import os, re, threading, time, hashlib, hmac, json, logging, contextlib
 from collections import deque
 from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
 from flask import Flask, jsonify, render_template, request
+from werkzeug.exceptions import HTTPException
 import paho.mqtt.client as paho_mqtt
 import psycopg2
 from psycopg2 import pool
@@ -330,6 +331,44 @@ def _start_mqtt():
         return None
 
 app = Flask(__name__, template_folder='../frontend', static_folder='../frontend', static_url_path='')
+
+_MIN_TOKEN_LENGTH = 16
+
+def _portal_token() -> str:
+    token = os.environ.get('PORTAL_CONTROL_TOKEN', '').strip()
+    return token if len(token) >= _MIN_TOKEN_LENGTH else ''
+
+def _dashboard_ui_enabled() -> bool:
+    return os.environ.get('DASHBOARD_UI_ENABLED', '').strip() == '1'
+
+# Runs before every route, static files included (app.js carries broker credentials).
+@app.before_request
+def _guard_request():
+    if request.endpoint == 'health':
+        return None
+    # The endpoint decides, not the path: '/api/../app.js' is served by the static route.
+    if request.endpoint in ('static', 'index') or not request.path.startswith('/api/'):
+        if _dashboard_ui_enabled():
+            return None
+        return 'Dashboard ini sudah pindah ke portal Smart Energy Monitoring.', 410
+
+    if os.environ.get('PORTAL_CONTROL_TOKEN', '').strip() and not _portal_token():
+        print(f"ERROR PORTAL_CONTROL_TOKEN is shorter than {_MIN_TOKEN_LENGTH} characters, API closed")
+        return jsonify({'ok': False, 'error': 'PORTAL_CONTROL_TOKEN terlalu pendek'}), 503
+
+    expected = _portal_token()
+    is_write = request.method not in ('GET', 'HEAD', 'OPTIONS')
+    if not expected:
+        # Writes fail closed. Reads stay open so a missing env does not blind the portal.
+        if is_write:
+            return jsonify({'ok': False, 'error': 'PORTAL_CONTROL_TOKEN belum diisi'}), 503
+        return None
+    if not is_write and _dashboard_ui_enabled():
+        return None
+    received = request.headers.get('X-Portal-Token', '')
+    if not hmac.compare_digest(received.encode('utf-8'), expected.encode('utf-8')):
+        return jsonify({'ok': False, 'error': 'Token tidak valid'}), 401
+    return None
 _mqtt_client = _start_mqtt() if (not app.debug or os.environ.get("WERKZEUG_RUN_MAIN") == "true") else None
 
 _PHASE_RE = re.compile(r'^L\d+$')
@@ -426,6 +465,8 @@ def init_db():
             pool = psycopg2.pool.ThreadedConnectionPool(
                 2, 50, db_url,
                 connect_timeout=8,
+                # A dead connection is noticed within about a minute instead of hanging.
+                keepalives=1, keepalives_idle=30, keepalives_interval=10, keepalives_count=3, tcp_user_timeout=20000,
                 options='-c statement_timeout=15000'
             )
             db_pool = pool  # Langsung sediakan pool agar request API tidak terblokir
@@ -668,87 +709,203 @@ def _get_device_capture_state(device_id: str) -> dict:
 
 STATE_FILE = 'active_captures.json'
 
-def _save_capture_states():
-    try:
-        with _capture_lock:
-            safe_states = {}
-            for did, state in _capture_states.items():
-                if state.get('active'):
-                    safe_states[did] = {
-                        'active': True,
-                        'session_id': state.get('session_id'),
-                        'session_name': state.get('session_name'),
-                        'device_id': state.get('device_id'),
-                        'device_name': state.get('device_name'),
-                        'interval': state.get('interval'),
-                        'started_at': state.get('started_at'),
-                        'count': state.get('count', 0),
-                        'enabled_phases': state.get('enabled_phases'),
-                        'sensor_names': state.get('sensor_names', {}),
-                        'time_offset_ms': state.get('time_offset_ms', 0),
-                        'store_id': state.get('store_id'),
-                    }
-        with open(STATE_FILE, 'w') as f:
-            json.dump(safe_states, f)
+# Serializes snapshot, file and database, so an older snapshot cannot land after a newer one.
+# Order: _state_io_lock, then _capture_lock. Never take it while holding _capture_lock.
+_state_io_lock = threading.RLock()
+# device -> number of its newest request. A finished write only clears the request it carried.
+_pending_state_sync: dict[str, int] = {}
+_state_request_counter = 0
+_touched_devices: set[str] = set()     # started or stopped since boot
+_state_load_complete = False
+_STATE_LOCK_WAIT_S = 10
 
-        if db_pool:
-            try:
-                with get_db_cursor() as cur:
-                    cur.execute("DELETE FROM capture_states;")
-                    for did, sdata in safe_states.items():
-                        cur.execute(
-                            "INSERT INTO capture_states (device_id, state) VALUES (%s, %s) ON CONFLICT (device_id) DO UPDATE SET state = %s, updated_at = CURRENT_TIMESTAMP;",
-                            (did, json.dumps(sdata), json.dumps(sdata))
-                        )
-            except Exception as dbe:
-                print(f"Error persisting capture states to DB: {dbe}")
+def _mark_state_pending(device_id: str) -> None:
+    global _state_request_counter
+    with _capture_lock:
+        _state_request_counter += 1
+        _pending_state_sync[device_id] = _state_request_counter
+
+def _take_state_work() -> tuple[dict[str, dict], dict[str, int]]:
+    """Snapshot and the requests it covers, taken together."""
+    with _capture_lock:
+        return _snapshot_active_states(), dict(_pending_state_sync)
+
+def _snapshot_active_states() -> dict[str, dict]:
+    with _capture_lock:
+        return {
+            did: {
+                'active': True,
+                'session_id': state.get('session_id'),
+                'session_name': state.get('session_name'),
+                'device_id': state.get('device_id'),
+                'device_name': state.get('device_name'),
+                'interval': state.get('interval'),
+                'started_at': state.get('started_at'),
+                'count': state.get('count', 0),
+                'enabled_phases': state.get('enabled_phases'),
+                'sensor_names': state.get('sensor_names', {}),
+                'time_offset_ms': state.get('time_offset_ms', 0),
+                'store_id': state.get('store_id'),
+                'latitude': state.get('latitude'),
+                'longitude': state.get('longitude'),
+            }
+            for did, state in _capture_states.items() if state.get('active')
+        }
+
+def _write_state_file(states: dict[str, dict]) -> None:
+    try:
+        tmp = STATE_FILE + '.tmp'
+        with open(tmp, 'w') as f:
+            json.dump(states, f)
+        os.replace(tmp, STATE_FILE)
     except Exception as e:
-        print(f"Error saving capture states: {e}")
+        print(f"Error writing {STATE_FILE}: {e}")
+
+def _sync_pending_states(states: dict[str, dict], requests: dict[str, int]) -> None:
+    """Caller holds _state_io_lock. Touches only the rows of pending devices."""
+    for did in sorted(requests):
+        try:
+            with get_db_cursor() as cur:
+                if did in states:
+                    payload = json.dumps(states[did])
+                    cur.execute(
+                        "INSERT INTO capture_states (device_id, state) VALUES (%s, %s) ON CONFLICT (device_id) DO UPDATE SET state = %s, updated_at = CURRENT_TIMESTAMP;",
+                        (did, payload, payload)
+                    )
+                else:
+                    cur.execute("DELETE FROM capture_states WHERE device_id = %s", (did,))
+            with _capture_lock:
+                if _pending_state_sync.get(did) == requests[did]:
+                    del _pending_state_sync[did]
+        except Exception as e:
+            print(f"Capture state of {did} not stored, will retry: {e}")
+            # Only an unreachable database ends the round; a bad row must not hold back the others.
+            if not db_pool or isinstance(e, (psycopg2.OperationalError, psycopg2.InterfaceError)):
+                return
+
+def _save_capture_states(device_id: str) -> bool:
+    """Persist one device. False when the database still holds the old state."""
+    _mark_state_pending(device_id)
+    # A stuck connection must not tie up every request thread; the retry worker finishes the save.
+    if not _state_io_lock.acquire(timeout=_STATE_LOCK_WAIT_S):
+        print(f"Capture state of {device_id} not stored, another save is stuck")
+        return False
+    try:
+        states, requests = _take_state_work()
+        _write_state_file(states)
+        _sync_pending_states(states, requests)
+        with _capture_lock:
+            return device_id not in _pending_state_sync
+    finally:
+        _state_io_lock.release()
+
+def _retry_state_work() -> None:
+    if not _state_load_complete:
+        _load_capture_states()
+    with _state_io_lock:
+        states, requests = _take_state_work()
+        if requests:
+            _write_state_file(states)
+            _sync_pending_states(states, requests)
+
+def _state_retry_worker() -> None:
+    while True:
+        time.sleep(10)
+        try:
+            _retry_state_work()
+        except Exception as e:
+            print(f"Error in _state_retry_worker: {e}")
+
+def _busy_response(message: str = 'Sesi masih merekam. Hentikan rekaman dulu.'):
+    return jsonify({'ok': False, 'error': message}), 409
+
+def _not_loaded_response():
+    return jsonify({'ok': False, 'error': 'Status rekaman belum termuat dari database. Coba lagi sebentar.'}), 503
+
+def _json_body() -> dict:
+    body = request.get_json(silent=True)
+    return body if isinstance(body, dict) else {}
+
+def _is_phase_recording(device_id: str, phase: str) -> bool:
+    with _capture_lock:
+        s = _capture_states.get(device_id) or {}
+        if not (s.get('active') or s.get('_finalizing')):
+            return False
+        phases = s.get('enabled_phases')
+        return phases is None or phase.lower() in {p.lower() for p in phases}
+
+def _is_session_busy(session_id: str) -> bool:
+    """True while a session records or its worker is still writing its last rows."""
+    with _capture_lock:
+        return any(
+            (s.get('active') and s.get('session_id') == session_id)
+            or (s.get('_finalizing') and s.get('_finalizing_session_id') == session_id)
+            for s in _capture_states.values()
+        )
+
+def _is_device_busy(device_id: str) -> bool:
+    with _capture_lock:
+        s = _capture_states.get(device_id) or {}
+        return bool(s.get('active') or s.get('_finalizing'))
+
+def _read_persisted_states() -> dict[str, dict]:
+    saved = {}
+    with get_db_cursor() as cur:
+        cur.execute("SELECT device_id, state FROM capture_states")
+        for r_did, r_state in cur.fetchall():
+            st = r_state if isinstance(r_state, dict) else json.loads(r_state)
+            if st and st.get('active'):
+                saved[r_did] = st
+    return saved
 
 def _load_capture_states():
-    try:
-        saved = {}
-        # Prioritas 1: Baca dari DB PostgreSQL (persistent walau container docker di-recreate)
-        if db_pool:
-            try:
-                with get_db_cursor() as cur:
-                    cur.execute("SELECT device_id, state FROM capture_states")
-                    for r_did, r_state in cur.fetchall():
-                        st = r_state if isinstance(r_state, dict) else json.loads(r_state)
-                        if st and st.get('active'):
-                            saved[r_did] = st
-            except Exception as dbe:
-                print(f"Note loading capture states from DB: {dbe}")
+    """Resume recordings. Runs again until the database answered; never replaces newer states."""
+    global _state_load_complete
+    saved, from_db = {}, False
+    if db_pool or os.environ.get('DATABASE_URL'):
+        try:
+            saved = _read_persisted_states()
+            from_db = True
+        except Exception as dbe:
+            print(f"ERROR capture states not loaded, recordings may be paused until the retry succeeds: {dbe}")
+    else:
+        from_db = True
 
-        # Prioritas 2: Fallback baca dari STATE_FILE jika DB kosong / belum ada
-        if not saved and os.path.exists(STATE_FILE):
+    if not saved and os.path.exists(STATE_FILE):
+        try:
             with open(STATE_FILE, 'r') as f:
                 saved = json.load(f)
+        except Exception as fe:
+            print(f"Error reading {STATE_FILE}: {fe}")
 
-        to_start = []
-        with _capture_lock:
-            for did, state in saved.items():
-                if state.get('active'):
-                    cstate = _get_device_capture_state(did)
-                    cstate.update(state)
-                    # Sinkronkan count aktual dari database history jika ada
-                    sid = cstate.get('session_id')
-                    if sid and db_pool:
-                        try:
-                            with get_db_cursor() as cur:
-                                cur.execute("SELECT COUNT(*) FROM history WHERE session_id = %s", (sid,))
-                                r_cnt = cur.fetchone()
-                                if r_cnt and r_cnt[0]:
-                                    cstate['count'] = r_cnt[0]
-                        except Exception:
-                            pass
-                    to_start.append(did)
-        for did in to_start:
-            _start_thread(did)
-        if to_start:
-            print(f"[Auto-Resume] Resumed active capture threads for devices: {to_start}")
-    except Exception as e:
-        print(f"Error loading capture states: {e}")
+    counts = {}
+    for did, state in saved.items():
+        if from_db and state.get('session_id') and did not in _capture_states:
+            try:
+                with get_db_cursor() as cur:
+                    cur.execute("SELECT COUNT(*) FROM history WHERE session_id = %s", (state['session_id'],))
+                    row = cur.fetchone()
+                    if row and row[0]:
+                        counts[did] = row[0]
+            except Exception:
+                pass
+
+    to_start = []
+    with _capture_lock:
+        for did, state in saved.items():
+            known = _capture_states.get(did) or {}
+            if not state.get('active') or did in _touched_devices or known.get('active') or known.get('_finalizing'):
+                continue
+            cstate = _get_device_capture_state(did)
+            cstate.update(state)
+            if did in counts:
+                cstate['count'] = counts[did]
+            to_start.append(did)
+    for did in to_start:
+        _start_thread(did)
+    if to_start:
+        print(f"[Auto-Resume] Resumed active capture threads for devices: {to_start}")
+    _state_load_complete = from_db
 
 def _data_hash(raw): return hashlib.md5(json.dumps(raw, sort_keys=True).encode()).hexdigest() if raw else None
 _sessions_cache: dict[str, dict] = {}
@@ -953,11 +1110,6 @@ def _live_buffer_worker() -> None:
             print(f"Error in _live_buffer_worker: {e}")
         time.sleep(1)
 
-if not app.debug or os.environ.get("WERKZEUG_RUN_MAIN") == "true":
-    init_db()
-    _load_capture_states()
-    threading.Thread(target=_live_buffer_worker, daemon=True).start()
-
 @app.route('/api/live-buffer/<device_id>')
 def get_live_buffer(device_id: str):
     buf = _device_live_buffer.get(device_id)
@@ -1016,7 +1168,7 @@ def get_history_buffer(device_id: str):
         print(f"Error in get_history_buffer: {e}")
         return jsonify([]), 500
 
-def _do_capture_io(device_id, session_id, sched_ts, interval, last_hash, last_change, enabled_phases, time_offset_ms):
+def _do_capture_io(device_id, session_id, sched_ts, interval, last_hash, last_change, enabled_phases, time_offset_ms, meta):
     try:
         raw = _mqtt_live_data.get(device_id)
         h   = _data_hash(raw); now = time.time()
@@ -1027,13 +1179,11 @@ def _do_capture_io(device_id, session_id, sched_ts, interval, last_hash, last_ch
         ts  = datetime.fromtimestamp(sched_shifted, tz=_WIB).strftime('%H:%M:%S %d/%m/%Y')
         epoch_val = int(sched_shifted * 1000)
         
-        with _capture_lock:
-            cstate = _get_device_capture_state(device_id)
-            sname = cstate.get('session_name') or 'Rekaman'
-            sensor_names = cstate.get('sensor_names') or {}
-            dev_name = cstate.get('device_name') or device_id
-            store_id = cstate.get('store_id')
-            
+        sname = meta.get('session_name') or 'Rekaman'
+        sensor_names = meta.get('sensor_names') or {}
+        dev_name = meta.get('device_name') or device_id
+        store_id = meta.get('store_id')
+
         if enabled_phases:
             phases = enabled_phases
         else:
@@ -1075,7 +1225,8 @@ def _do_capture_io(device_id, session_id, sched_ts, interval, last_hash, last_ch
                 
         with _capture_lock:
             cstate = _get_device_capture_state(device_id)
-            cstate['count'] += len(phases)
+            if cstate.get('session_id') == session_id:
+                cstate['count'] += len(phases)
     except Exception as e:
         print(f"Error in _do_capture_io ({device_id}): {e}")
         try:
@@ -1103,6 +1254,7 @@ def _capture_worker(device_id: str, stop: threading.Event, wake: threading.Event
                 iv  = float(cstate.get('interval') or 15)
                 ep  = cstate.get('enabled_phases')
                 to_ms = cstate.get('time_offset_ms', 0)
+                meta = {k: cstate.get(k) for k in ('session_name', 'sensor_names', 'device_name', 'store_id')}
             if not sid:
                 break
             sched = nxt
@@ -1110,7 +1262,7 @@ def _capture_worker(device_id: str, stop: threading.Event, wake: threading.Event
             if time.time() - nxt > 10:
                 nxt = time.time()
             nxt += iv
-            _do_capture_io(did, sid, sched, iv, last_hash, last_change, ep, to_ms)
+            _do_capture_io(did, sid, sched, iv, last_hash, last_change, ep, to_ms, meta)
         except Exception as we:
             print(f"[Capture Worker Error] Device {device_id}: {we}")
             try:
@@ -1132,19 +1284,28 @@ def _start_thread(device_id: str) -> None:
 def _finalize_bg(sid, did, count, se, th, enabled_phases, time_offset_ms) -> None:
     try:
         if se: se.set()
-        if th and th.is_alive(): th.join(timeout=5)
+        while th and th.is_alive():
+            th.join(timeout=30)
+            if th.is_alive():
+                print(f"[Capture] Worker of {did} is still writing session {sid}")
     except Exception as e:
         print(f"Error in _finalize_bg ({did}): {e}")
     finally:
         with _capture_lock:
             if did in _capture_states:
                 _capture_states[did]['_finalizing'] = False
+                _capture_states[did]['_finalizing_session_id'] = None
 
-def _stop_device_capture(device_id: str) -> bool:
+def _finalize_in_background(*args) -> None:
+    threading.Thread(target=_finalize_bg, args=args, daemon=True).start()
+
+def _stop_device_capture(device_id: str) -> tuple[bool, bool]:
+    """(stopped, persisted)"""
     with _capture_lock:
         cstate = _capture_states.get(device_id)
         if not cstate or not cstate.get('active'):
-            return False
+            return False, True
+        _touched_devices.add(device_id)
         sid = cstate.get('session_id')
         cnt = cstate.get('count', 0)
         did = cstate.get('device_id', device_id)
@@ -1153,14 +1314,15 @@ def _stop_device_capture(device_id: str) -> bool:
         ep  = cstate.get('enabled_phases')
         to_ms = cstate.get('time_offset_ms', 0)
         cstate.update({
-            'active': False, '_finalizing': True,
+            'active': False, '_finalizing': True, '_finalizing_session_id': sid,
             'session_id': None, 'session_name': None,
             'count': 0, 'started_at': None, 'enabled_phases': None,
             '_thread': None, '_stop_event': None, '_wake_event': None,
         })
-    _save_capture_states()
-    threading.Thread(target=_finalize_bg, args=(sid, did, cnt, se, th, ep, to_ms), daemon=True).start()
-    return True
+    if se: se.set()
+    persisted = _save_capture_states(device_id)
+    _finalize_in_background(sid, did, cnt, se, th, ep, to_ms)
+    return True, persisted
 
 _APP_VERSION = int(time.time())
 
@@ -1184,8 +1346,8 @@ def health(): return jsonify({"status": "ok", "message": "Service is alive"}), 2
 @app.errorhandler(500)
 def internal_error(error):
     if request.path.startswith('/api/'):
-        return jsonify({'ok': False, 'error': 'Internal Server Error', 'detail': str(error)}), 500
-    return render_template('index.html', v=_APP_VERSION), 500
+        return jsonify({'ok': False, 'error': 'Internal Server Error'}), 500
+    return 'Internal Server Error', 500
 
 @app.errorhandler(404)
 def not_found_error(error):
@@ -1195,10 +1357,14 @@ def not_found_error(error):
 
 @app.errorhandler(Exception)
 def handle_exception(e):
+    if isinstance(e, HTTPException):
+        if request.path.startswith('/api/'):
+            return jsonify({'ok': False, 'error': e.name}), e.code
+        return e
+    print(f"[API Error] {request.path}: {e}")
     if request.path.startswith('/api/'):
-        print(f"[API Error] {request.path}: {e}")
-        return jsonify({'ok': False, 'error': str(e)}), 500
-    return render_template('index.html', v=_APP_VERSION), 500
+        return jsonify({'ok': False, 'error': 'Internal Server Error'}), 500
+    return 'Internal Server Error', 500
 
 @app.route('/api/config')
 def get_config(): return jsonify({})
@@ -1307,7 +1473,7 @@ def list_devices():
                 if added:
                     try:
                         with get_db_cursor() as cur2:
-                            cur2.execute("UPDATE devices SET sensors = %s WHERE id = %s", (json.dumps(sensors_list), did))
+                            cur2.execute("UPDATE devices SET sensors = %s WHERE id = %s AND (sensors IS NULL OR jsonb_array_length(sensors) = 0)", (json.dumps(sensors_list), did))
                     except Exception as ex:
                         print(f"Error auto-updating sensors for {did}: {ex}")
 
@@ -1351,7 +1517,7 @@ def init_device_sensors(device_id: str):
         detected = sorted([k for k in raw if _is_valid_phase_key(k) and isinstance(raw.get(k), dict)], key=_phase_sort_key)
         
         with get_db_cursor() as cur:
-            cur.execute("SELECT sensors FROM devices WHERE id = %s", (device_id,))
+            cur.execute("SELECT sensors FROM devices WHERE id = %s FOR UPDATE", (device_id,))
             row = cur.fetchone()
             
             current_sensors = []
@@ -1381,12 +1547,13 @@ def init_device_sensors(device_id: str):
         return jsonify({'ok': True, 'initialized': added, 'device_id': device_id, 'phases': detected})
     except Exception as e:
         print(f"Error in init_device_sensors: {e}")
-        return jsonify({'ok': False, 'error': str(e)}), 500
+        print(f"[API Error] {request.path}: {e}")
+        return jsonify({'ok': False, 'error': 'Internal Server Error'}), 500
 
 @app.route('/api/devices/<device_id>/rename', methods=['POST'])
 def rename_device(device_id: str):
-    data = request.get_json(silent=True) or {}
-    name = (data.get('name') or '').strip()
+    data = _json_body()
+    name = str(data.get('name') or '').strip()
     store_id = data.get('store_id')
     lat = data.get('latitude')
     lng = data.get('longitude')
@@ -1404,31 +1571,46 @@ def rename_device(device_id: str):
 
     ok, err = validate_device_name(name)
     if not ok: return jsonify({'ok': False, 'error': err}), 400
+    fields = {'device_name': name, 'store_id': store_id, 'latitude': lat, 'longitude': lng}
+    previous, active_sid = {}, None
+    with _capture_lock:
+        cstate = _capture_states.get(device_id)
+        if cstate and cstate.get('active'):
+            active_sid = cstate.get('session_id')
+            previous = {k: cstate.get(k) for k in fields}
+            cstate.update(fields)
+
+    def restore():
+        with _capture_lock:
+            cstate = _capture_states.get(device_id)
+            if previous and cstate and cstate.get('session_id') == active_sid:
+                cstate.update(previous)
+
     try:
         with get_db_cursor() as cur:
-            cur.execute("""
-                INSERT INTO devices (id, name, online, last_seen, store_id, latitude, longitude)
-                VALUES (%s, %s, FALSE, '---', %s, %s, %s)
-                ON CONFLICT (id) DO UPDATE SET name = %s, store_id = %s, latitude = %s, longitude = %s;
-            """, (device_id, name, store_id, lat, lng, name, store_id, lat, lng))
-            
-            with _capture_lock:
-                cstate = _capture_states.get(device_id)
-                if cstate and cstate.get('active'):
-                    cstate['device_name'] = name
-                    cstate['store_id'] = store_id
-                    cstate['latitude'] = lat
-                    cstate['longitude'] = lng
-                    active_sid = cstate.get('session_id')
-                    if active_sid:
-                        cur.execute("UPDATE history SET device_name = %s, store_id = %s, latitude = %s, longitude = %s WHERE session_id = %s", (name, store_id, lat, lng, active_sid))
-
-        return jsonify({'ok': True, 'name': name, 'store_id': store_id, 'latitude': lat, 'longitude': lng, 'timestamp': int(time.time() * 1000)})
+            cur.execute("SELECT 1 FROM devices WHERE id = %s", (device_id,))
+            found = cur.fetchone()
+            if found:
+                cur.execute(
+                    "UPDATE devices SET name = %s, store_id = %s, latitude = %s, longitude = %s WHERE id = %s",
+                    (name, store_id, lat, lng, device_id),
+                )
+                if active_sid:
+                    cur.execute("UPDATE history SET device_name = %s, store_id = %s, latitude = %s, longitude = %s WHERE session_id = %s", (name, store_id, lat, lng, active_sid))
     except Exception as e:
-        return jsonify({'ok': False, 'error': str(e)}), 500
+        restore()
+        print(f"[API Error] {request.path}: {e}")
+        return jsonify({'ok': False, 'error': 'Internal Server Error'}), 500
+    if not found:
+        restore()
+        return jsonify({'ok': False, 'error': 'Perangkat tidak ditemukan'}), 404
+    persisted = _save_capture_states(device_id) if active_sid else True
+    return jsonify({'ok': True, 'name': name, 'store_id': store_id, 'latitude': lat, 'longitude': lng, 'timestamp': int(time.time() * 1000), 'persisted': persisted})
 
 @app.route('/api/devices/<device_id>', methods=['DELETE'])
 def delete_device_permanently(device_id: str):
+    if not _state_load_complete: return _not_loaded_response()
+    if _is_device_busy(device_id): return _busy_response('Perangkat masih merekam. Hentikan rekaman dulu.')
     try:
         # Hapus cache memori backend agar worker mendeteksi ulang
         _mqtt_live_data.pop(device_id, None)
@@ -1448,44 +1630,21 @@ def delete_device_permanently(device_id: str):
         return jsonify({'ok': True, 'device_id': device_id})
     except Exception as e:
         print(f"Error in delete_device_permanently: {e}")
-        return jsonify({'ok': False, 'error': str(e)}), 500
-
-@app.route('/api/devices/<device_id>/relay', methods=['POST'])
-def control_device_relay(device_id: str):
-    """Kontrol relay Smart Plug via MQTT topik AlfaEnergy/<device_id>/cmnd/POWER."""
-    global _mqtt_client
-    if not _mqtt_client:
-        return jsonify({'ok': False, 'error': 'MQTT client tidak aktif'}), 503
-    data = request.get_json(silent=True) or {}
-    cmd = str(data.get('state') or 'TOGGLE').strip().upper()
-    if cmd not in ('ON', 'OFF', 'TOGGLE', '1', '0'):
-        return jsonify({'ok': False, 'error': 'State harus ON, OFF, atau TOGGLE'}), 400
-
-    if device_id.lower().startswith('plug-'):
-        raw_mac = device_id[5:]
-        topic = f"AlfaEnergy/Plug/{raw_mac}/cmnd/POWER"
-    elif device_id.upper().startswith('CT-'):
-        raw_mac = device_id[3:]
-        topic = f"AlfaEnergy/CT/{raw_mac}/cmnd/POWER"
-    else:
-        topic = f"AlfaEnergy/{device_id}/cmnd/POWER"
-
-    try:
-        _mqtt_client.publish(topic, cmd)
-        return jsonify({'ok': True, 'device_id': device_id, 'topic': topic, 'command': cmd})
-    except Exception as e:
-        return jsonify({'ok': False, 'error': str(e)}), 500
+        print(f"[API Error] {request.path}: {e}")
+        return jsonify({'ok': False, 'error': 'Internal Server Error'}), 500
 
 @app.route('/api/devices/<device_id>/sensors/<phase>/rename', methods=['POST'])
 def rename_sensor(device_id: str, phase: str):
     if not validate_phase_key(phase): return jsonify({'ok': False, 'error': f'Sensor tidak valid: {phase}.'}), 400
-    name = ((request.get_json(silent=True) or {}).get('name') or '').strip()
+    name = str(_json_body().get('name') or '').strip()
     ok, err = validate_device_name(name)
     if not ok: return jsonify({'ok': False, 'error': err}), 400
     try:
         with get_db_cursor() as cur:
-            cur.execute("SELECT sensors FROM devices WHERE id = %s", (device_id,))
+            cur.execute("SELECT sensors FROM devices WHERE id = %s FOR UPDATE", (device_id,))
             row = cur.fetchone()
+            if not row:
+                return jsonify({'ok': False, 'error': 'Perangkat tidak ditemukan'}), 404
             sensors_list = []
             if row and row[0]:
                 sensors_list = row[0] if isinstance(row[0], list) else json.loads(row[0])
@@ -1507,16 +1666,19 @@ def rename_sensor(device_id: str, phase: str):
             cur.execute("UPDATE devices SET sensors = %s WHERE id = %s", (json.dumps(sensors_list), device_id))
         return jsonify({'ok': True, 'name': name, 'phase': phase, 'timestamp': int(time.time() * 1000)})
     except Exception as e:
-        return jsonify({'ok': False, 'error': str(e)}), 500
+        print(f"[API Error] {request.path}: {e}")
+        return jsonify({'ok': False, 'error': 'Internal Server Error'}), 500
 
 @app.route('/api/devices/<device_id>/sensors/<phase>/color', methods=['POST'])
 def set_sensor_color(device_id: str, phase: str):
     if not validate_phase_key(phase): return jsonify({'ok': False, 'error': f'Sensor tidak valid: {phase}.'}), 400
-    color = ((request.get_json(silent=True) or {}).get('color') or '').strip()
+    color = str(_json_body().get('color') or '').strip()
     try:
         with get_db_cursor() as cur:
-            cur.execute("SELECT sensors FROM devices WHERE id = %s", (device_id,))
+            cur.execute("SELECT sensors FROM devices WHERE id = %s FOR UPDATE", (device_id,))
             row = cur.fetchone()
+            if not row:
+                return jsonify({'ok': False, 'error': 'Perangkat tidak ditemukan'}), 404
             sensors_list = []
             if row and row[0]:
                 sensors_list = row[0] if isinstance(row[0], list) else json.loads(row[0])
@@ -1539,17 +1701,23 @@ def set_sensor_color(device_id: str, phase: str):
             cur.execute("UPDATE devices SET sensors = %s WHERE id = %s", (json.dumps(sensors_list), device_id))
         return jsonify({'ok': True, 'color': color, 'phase': phase})
     except Exception as e:
-        return jsonify({'ok': False, 'error': str(e)}), 500
+        print(f"[API Error] {request.path}: {e}")
+        return jsonify({'ok': False, 'error': 'Internal Server Error'}), 500
 
 @app.route('/api/devices/<device_id>/sensors/<phase>/enabled', methods=['POST'])
 def set_sensor_enabled(device_id: str, phase: str):
     if not validate_phase_key(phase): return jsonify({'ok': False, 'error': f'Sensor tidak valid: {phase}.'}), 400
-    body = request.get_json(silent=True) or {}
-    enabled = bool(body.get('enabled', True))
+    body = _json_body()
+    enabled = body.get('enabled')
+    if not isinstance(enabled, bool):
+        return jsonify({'ok': False, 'error': 'enabled harus true atau false'}), 400
+    if not enabled and _is_phase_recording(device_id, phase): return _busy_response('Sensor masih direkam. Hentikan rekaman dulu.')
     try:
         with get_db_cursor() as cur:
-            cur.execute("SELECT sensors FROM devices WHERE id = %s", (device_id,))
+            cur.execute("SELECT sensors FROM devices WHERE id = %s FOR UPDATE", (device_id,))
             row = cur.fetchone()
+            if not row:
+                return jsonify({'ok': False, 'error': 'Perangkat tidak ditemukan'}), 404
             sensors_list = []
             if row and row[0]:
                 sensors_list = row[0] if isinstance(row[0], list) else json.loads(row[0])
@@ -1578,15 +1746,19 @@ def set_sensor_enabled(device_id: str, phase: str):
         return jsonify({'ok': True, 'enabled': enabled, 'phase': phase, 'device_id': device_id})
     except Exception as e:
         print(f"Error in set_sensor_enabled: {e}")
-        return jsonify({'ok': False, 'error': str(e)}), 500
+        print(f"[API Error] {request.path}: {e}")
+        return jsonify({'ok': False, 'error': 'Internal Server Error'}), 500
 
 @app.route('/api/devices/<device_id>/sensors/<phase>', methods=['DELETE'])
 def delete_sensor(device_id: str, phase: str):
     if not validate_phase_key(phase): return jsonify({'ok': False, 'error': f'Sensor tidak valid: {phase}.'}), 400
+    if _is_phase_recording(device_id, phase): return _busy_response('Sensor masih direkam. Hentikan rekaman dulu.')
     try:
         with get_db_cursor() as cur:
-            cur.execute("SELECT sensors FROM devices WHERE id = %s", (device_id,))
+            cur.execute("SELECT sensors FROM devices WHERE id = %s FOR UPDATE", (device_id,))
             row = cur.fetchone()
+            if not row:
+                return jsonify({'ok': False, 'error': 'Perangkat tidak ditemukan'}), 404
             sensors_list = []
             if row and row[0]:
                 sensors_list = row[0] if isinstance(row[0], list) else json.loads(row[0])
@@ -1608,7 +1780,8 @@ def delete_sensor(device_id: str, phase: str):
 
         return jsonify({'ok': True, 'phase': phase, 'device_id': device_id})
     except Exception as e:
-        return jsonify({'ok': False, 'error': str(e)}), 500
+        print(f"[API Error] {request.path}: {e}")
+        return jsonify({'ok': False, 'error': 'Internal Server Error'}), 500
 
 @app.route('/api/devices/<device_id>/sensors/<phase>/init', methods=['POST'])
 def init_sensor(device_id: str, phase: str):
@@ -1616,8 +1789,10 @@ def init_sensor(device_id: str, phase: str):
     if not validate_phase_key(phase): return jsonify({'ok': False, 'error': f'Sensor tidak valid: {phase}.'}), 400
     try:
         with get_db_cursor() as cur:
-            cur.execute("SELECT sensors FROM devices WHERE id = %s", (device_id,))
+            cur.execute("SELECT sensors FROM devices WHERE id = %s FOR UPDATE", (device_id,))
             row = cur.fetchone()
+            if not row:
+                return jsonify({'ok': False, 'error': 'Perangkat tidak ditemukan'}), 404
             sensors_list = []
             if row and row[0]:
                 sensors_list = row[0] if isinstance(row[0], list) else json.loads(row[0])
@@ -1631,38 +1806,8 @@ def init_sensor(device_id: str, phase: str):
             cur.execute("UPDATE devices SET sensors = %s WHERE id = %s", (json.dumps(sensors_list), device_id))
         return jsonify({'ok': True, 'sensor': new_s, 'timestamp': int(time.time() * 1000)})
     except Exception as e:
-        return jsonify({'ok': False, 'error': str(e)}), 500
-
-@app.route('/api/devices/<device_id>/sensors/<phase>/enabled', methods=['POST'])
-def set_phase_enabled(device_id: str, phase: str):
-    phase = phase.upper()
-    if not validate_phase_key(phase): return jsonify({'ok': False, 'error': f'Sensor tidak valid: {phase}.'}), 400
-    enabled = bool((request.get_json(silent=True) or {}).get('enabled', True))
-    try:
-        with get_db_cursor() as cur:
-            cur.execute("SELECT sensors FROM devices WHERE id = %s", (device_id,))
-            row = cur.fetchone()
-            sensors_list = []
-            if row and row[0]:
-                sensors_list = row[0] if isinstance(row[0], list) else json.loads(row[0])
-            for s in sensors_list:
-                if s.get('phase') == phase:
-                    s['enabled'] = enabled
-                    break
-            cur.execute("UPDATE devices SET sensors = %s WHERE id = %s", (json.dumps(sensors_list), device_id))
-        return jsonify({'ok': True, 'phase': phase, 'enabled': enabled})
-    except Exception as e:
-        return jsonify({'ok': False, 'error': str(e)}), 500
-
-@app.route('/api/devices/<device_id>/hourly-capture', methods=['POST'])
-def trigger_hourly_capture(device_id: str):
-    threading.Thread(target=_do_hourly_capture_device, args=(device_id,), daemon=True).start()
-    return jsonify({'ok': True, 'device_id': device_id, 'triggered_at': _ts_now()})
-
-@app.route('/api/hourly-capture/trigger-all', methods=['POST'])
-def trigger_hourly_all():
-    threading.Thread(target=_do_hourly_capture_all, daemon=True).start()
-    return jsonify({'ok': True, 'triggered_at': _ts_now()})
+        print(f"[API Error] {request.path}: {e}")
+        return jsonify({'ok': False, 'error': 'Internal Server Error'}), 500
 
 @app.route('/api/capture/status')
 def capture_status():
@@ -1710,11 +1855,14 @@ def capture_status():
 @app.route('/api/capture/start', methods=['POST'])
 def capture_start():
     try:
-        body  = request.get_json(silent=True) or {}
-        did   = (body.get('deviceId')    or '').strip()
-        dname = (body.get('deviceName')  or '').strip()
-        sname = (body.get('sessionName') or '').strip() or f'Rekaman {_ts_now()}'
-        iv    = max(1, int(body.get('interval', 15)))
+        body  = _json_body()
+        did   = str(body.get('deviceId')    or '').strip()
+        dname = str(body.get('deviceName')  or '').strip()
+        sname = str(body.get('sessionName') or '').strip() or f'Rekaman {_ts_now()}'
+        try:
+            iv = max(15, int(body.get('interval', 15)))
+        except (TypeError, ValueError):
+            return jsonify({'ok': False, 'error': 'interval harus angka'}), 400
         hints = sorted([p for p in (body.get('phases') or []) if _is_valid_phase_key(p)], key=_phase_sort_key)
         if not did: return jsonify({'ok': False, 'error': 'deviceId harus diisi'}), 400
         if not hints: return jsonify({'ok': False, 'error': 'Minimal 1 sensor harus diaktifkan'}), 400
@@ -1722,10 +1870,12 @@ def capture_start():
         # Baca metadata sensor & toko dari DB DI LUAR LOCK (agar lock tidak menahan koneksi)
         sensor_names = {}
         store_id = None
+        registered = True  # a database outage must not stop a recording from starting
         try:
             with get_db_cursor() as cur:
                 cur.execute("SELECT sensors, store_id FROM devices WHERE id = %s", (did,))
                 row = cur.fetchone()
+                registered = row is not None
                 if row:
                     if row[0]:
                         sensors_list = row[0] if isinstance(row[0], list) else json.loads(row[0])
@@ -1737,6 +1887,8 @@ def capture_start():
                     store_id = row[1]
         except Exception as dbe:
             print(f"[capture_start] DB lookup warning: {dbe}")
+        if not registered:
+            return jsonify({'ok': False, 'error': 'Perangkat tidak ditemukan'}), 404
 
         sid    = f'session_{int(time.time() * 1000)}'
         now_s  = _ts_now()
@@ -1753,6 +1905,7 @@ def capture_start():
                 'count': 0, 'started_at': now_s, 'enabled_phases': hints, 'time_offset_ms': 0,
                 'sensor_names': sensor_names, 'store_id': store_id,
             })
+            _touched_devices.add(did)
             _start_thread(did)
 
         # MQTT publish & save state file dijalankan DI LUAR LOCK
@@ -1762,90 +1915,60 @@ def capture_start():
                 _mqtt_client.publish(f"energymeter/{did}/cmd/resetEnergy", "1")
             except Exception:
                 pass
-        _save_capture_states()
+        persisted = _save_capture_states(did)
 
-        return jsonify({'ok': True, 'session_id': sid, 'session_name': sname, 'device_id': did})
+        return jsonify({'ok': True, 'session_id': sid, 'session_name': sname, 'device_id': did, 'persisted': persisted})
     except Exception as e:
         print(f"Error in capture_start: {e}")
-        return jsonify({'ok': False, 'error': str(e)}), 500
+        print(f"[API Error] {request.path}: {e}")
+        return jsonify({'ok': False, 'error': 'Internal Server Error'}), 500
 
 @app.route('/api/capture/stop', methods=['POST'])
 def capture_stop():
     try:
-        body = request.get_json(silent=True) or {}
-        did  = (body.get('deviceId') or '').strip()
+        body = _json_body()
+        did  = str(body.get('deviceId') or '').strip()
         if not did:
-            with _capture_lock:
-                active_dids = [d for d, s in _capture_states.items() if s.get('active')]
-                did = active_dids[0] if active_dids else None
-        if not did:
-            return jsonify({'ok': False, 'error': 'Tidak ada capture aktif'}), 400
-        
-        stopped = _stop_device_capture(did)
+            return jsonify({'ok': False, 'error': 'deviceId harus diisi'}), 400
+
+        stopped, persisted = _stop_device_capture(did)
         if not stopped:
             return jsonify({'ok': False, 'error': f'Tidak ada capture aktif untuk perangkat {did}'}), 400
         _invalidate_sessions_cache()
-        return jsonify({'ok': True, 'device_id': did})
+        return jsonify({'ok': True, 'device_id': did, 'persisted': persisted})
     except Exception as e:
         print(f"Error in capture_stop: {e}")
-        return jsonify({'ok': False, 'error': str(e)}), 500
+        print(f"[API Error] {request.path}: {e}")
+        return jsonify({'ok': False, 'error': 'Internal Server Error'}), 500
 
 @app.route('/api/capture/interval', methods=['POST'])
 def capture_interval():
-    body = request.get_json(silent=True) or {}
-    iv = max(15, int(body.get('interval', 15)))
-    did = (body.get('deviceId') or '').strip()
-    with _capture_lock:
-        if did:
-            cstate = _get_device_capture_state(did)
-            cstate['interval'] = iv
-            ev = cstate.get('_wake_event')
-            if ev: ev.set()
-        else:
-            for s in _capture_states.values():
-                s['interval'] = iv
-                ev = s.get('_wake_event')
-                if ev: ev.set()
-    return jsonify({'ok': True, 'interval': iv})
-
-@app.route('/api/capture/shift_time', methods=['POST'])
-def capture_shift_time():
-    body = request.get_json(silent=True) or {}
-    delta_ms = int(body.get('deltaMs', 0))
-    sid = body.get('sessionId')
-    if not sid: return jsonify({'ok': False, 'error': 'sessionId harus diisi'}), 400
-    
-    with _capture_lock:
-        for s in _capture_states.values():
-            if s.get('active') and s.get('session_id') == sid:
-                s['time_offset_ms'] = s.get('time_offset_ms', 0) + delta_ms
-            
+    body = _json_body()
+    did = str(body.get('deviceId') or '').strip()
+    if not did:
+        return jsonify({'ok': False, 'error': 'deviceId harus diisi'}), 400
     try:
-        with get_db_cursor() as cur:
-            cur.execute("""
-                UPDATE history
-                SET epoch = epoch + %s
-                WHERE session_id = %s
-            """, (delta_ms, sid))
+        iv = max(15, int(body.get('interval', 15)))
+    except (TypeError, ValueError):
+        return jsonify({'ok': False, 'error': 'interval harus angka'}), 400
+    with _capture_lock:
+        cstate = _capture_states.get(did)
+        if not cstate or not cstate.get('active'):
+            return jsonify({'ok': False, 'error': f'Tidak ada capture aktif untuk perangkat {did}'}), 400
+        cstate['interval'] = iv
+        ev = cstate.get('_wake_event')
+        if ev: ev.set()
+    persisted = _save_capture_states(did)
+    return jsonify({'ok': True, 'interval': iv, 'persisted': persisted})
 
-            cur.execute("""
-                SELECT id, epoch FROM history
-                WHERE session_id = %s
-            """, (sid,))
-            rows = cur.fetchall()
-
-            for row in rows:
-                rid, new_epoch = row
-                new_ts = datetime.fromtimestamp(new_epoch / 1000.0, tz=_WIB).strftime('%H:%M:%S %d/%m/%Y')
-                cur.execute("""
-                    UPDATE history
-                    SET timestamp = %s
-                    WHERE id = %s
-                """, (new_ts, rid))
-        _invalidate_sessions_cache()
-        return jsonify({'ok': True})
-    except Exception as e:
-        return jsonify({'ok': False, 'error': str(e)}), 500
+# Not used by the portal; each could damage recordings.
+@app.route('/api/capture/shift_time', methods=['POST'])
+@app.route('/api/capture/clear-all', methods=['POST'])
+@app.route('/api/devices/<device_id>/relay', methods=['POST'])
+@app.route('/api/devices/<device_id>/hourly-capture', methods=['POST'])
+@app.route('/api/hourly-capture/trigger-all', methods=['POST'])
+def removed_command(device_id: str = ''):
+    return jsonify({'ok': False, 'error': 'Perintah ini sudah tidak tersedia'}), 410
 
 @app.route('/api/sessions')
 @app.route('/api/devices/<device_id>/sessions')
@@ -2148,10 +2271,17 @@ def get_session_chart_data(session_id: str):
 
 @app.route('/api/capture/rename-session', methods=['POST'])
 def rename_session():
-    body = request.get_json(silent=True) or {}
+    body = _json_body()
     sid = body.get('sessionId')
-    name = (body.get('name') or '').strip()
+    name = str(body.get('name') or '').strip()
     if not sid or not name: return jsonify({'ok': False, 'error': 'Invalid parameters'}), 400
+    # Memory first: the worker's next rows must not bring the old name back.
+    previous = {}
+    with _capture_lock:
+        for did, state in _capture_states.items():
+            if state.get('active') and state.get('session_id') == sid:
+                previous[did] = state.get('session_name')
+                state['session_name'] = name
     try:
         with get_db_cursor() as cur:
             cur.execute("""
@@ -2159,17 +2289,23 @@ def rename_session():
                 SET session_name = %s
                 WHERE session_id = %s
             """, (name, sid))
-        _invalidate_sessions_cache()
-        return jsonify({'ok': True})
     except Exception as e:
-        return jsonify({'ok': False, 'error': str(e)}), 500
+        with _capture_lock:
+            for did, old in previous.items():
+                if _capture_states[did].get('session_id') == sid:
+                    _capture_states[did]['session_name'] = old
+        print(f"[API Error] {request.path}: {e}")
+        return jsonify({'ok': False, 'error': 'Internal Server Error'}), 500
+    persisted = all([_save_capture_states(did) for did in previous])
+    _invalidate_sessions_cache()
+    return jsonify({'ok': True, 'persisted': persisted})
 
 @app.route('/api/capture/rename-session-sensor', methods=['POST'])
 def rename_session_sensor():
-    body = request.get_json(silent=True) or {}
+    body = _json_body()
     sid = body.get('sessionId')
     phase = body.get('phase')
-    name = (body.get('name') or '').strip()
+    name = str(body.get('name') or '').strip()
     if not sid or not phase or not name:
         return jsonify({'ok': False, 'error': 'Invalid parameters'}), 400
     try:
@@ -2177,18 +2313,21 @@ def rename_session_sensor():
             cur.execute("""
                 UPDATE history
                 SET phase_name = %s
-                WHERE session_id = %s AND phase = %s
-            """, (name, sid, phase.upper()))
+                WHERE session_id = %s AND LOWER(phase) = LOWER(%s)
+            """, (name, sid, phase))
         _invalidate_sessions_cache()
         return jsonify({'ok': True})
     except Exception as e:
-        return jsonify({'ok': False, 'error': str(e)}), 500
+        print(f"[API Error] {request.path}: {e}")
+        return jsonify({'ok': False, 'error': 'Internal Server Error'}), 500
 
 @app.route('/api/capture/delete-session', methods=['POST'])
 def delete_session():
-    body = request.get_json(silent=True) or {}
+    body = _json_body()
     sid = body.get('sessionId')
     if not sid: return jsonify({'ok': False, 'error': 'Invalid parameters'}), 400
+    if not _state_load_complete: return _not_loaded_response()
+    if _is_session_busy(sid): return _busy_response()
     try:
         with get_db_cursor() as cur:
             cur.execute("""
@@ -2198,23 +2337,8 @@ def delete_session():
         _invalidate_sessions_cache()
         return jsonify({'ok': True})
     except Exception as e:
-        return jsonify({'ok': False, 'error': str(e)}), 500
-
-@app.route('/api/capture/clear-all', methods=['POST'])
-def clear_all_sessions():
-    body = request.get_json(silent=True) or {}
-    did = body.get('deviceId')
-    if not did: return jsonify({'ok': False, 'error': 'Invalid parameters'}), 400
-    try:
-        with get_db_cursor() as cur:
-            cur.execute("""
-                DELETE FROM history
-                WHERE device_id = %s
-            """, (did,))
-        _invalidate_sessions_cache()
-        return jsonify({'ok': True})
-    except Exception as e:
-        return jsonify({'ok': False, 'error': str(e)}), 500
+        print(f"[API Error] {request.path}: {e}")
+        return jsonify({'ok': False, 'error': 'Internal Server Error'}), 500
 
 @app.route('/api/devices/<device_id>/chart-data')
 def get_device_chart_data(device_id: str):
@@ -2349,13 +2473,22 @@ def get_capture_log():
     except Exception as e:
         return str(e), 500, {'Content-Type': 'text/plain'}
 
+# Last in the module: resuming a recording needs every function above to exist.
+if not app.debug or os.environ.get("WERKZEUG_RUN_MAIN") == "true":
+    init_db()
+    try:
+        _load_capture_states()
+    except Exception as e:
+        # The retry worker tries again; a failed resume must not keep the server down.
+        print(f"ERROR resuming recordings at boot: {e}")
+    threading.Thread(target=_live_buffer_worker, daemon=True).start()
+    threading.Thread(target=_state_retry_worker, daemon=True).start()
+
 if __name__ == '__main__':
     flask_host = os.environ.get("FLASK_HOST", "0.0.0.0")
     try:
         flask_port = int(os.environ.get("FLASK_PORT", "5000"))
     except ValueError:
         flask_port = 5000
-    
-    _load_capture_states()
     
     app.run(debug=True, host=flask_host, port=flask_port)
