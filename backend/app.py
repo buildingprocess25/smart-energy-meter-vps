@@ -15,9 +15,12 @@ load_dotenv(os.path.join(os.path.dirname(__file__), '..', '.env'))
 load_dotenv(os.path.join(os.path.dirname(__file__), '.env'))
 load_dotenv()
 
+_WIB = timezone(timedelta(hours=7))
+
 _mqtt_live_data = {}
 _mqtt_last_seen = {}
 _db_last_ping = {}
+_buffer_sync_status = {}  # device_id -> {'status': str, 'total': int, 'replayed': int, 'downtime_sec': int, 'start_time': float, 'last_updated': float}
 
 MAP_METRIC = {
     'Voltage_V': 'Voltage (V)',
@@ -39,6 +42,53 @@ _ESP32_JSON_MAP = {
     'Hz': 'Frequency (Hz)', 'kWh': 'Active Energy (kWh)', 'pf': 'Power Factor',
 }
 
+def _process_buffered_record(device_id: str, phase: str, rec_ts: str, rec_epoch: int,
+                             slot_ts: str, slot_epoch: int, seq: int,
+                             v: float, c: float, w: float, tot: float, pf: float, hz: float):
+    """
+    Menyimpan data offline buffer LittleFS dari Sparta CT / Sparta Plug:
+    1. Menyimpan data detail per menit ke tabel buffered_telemetry.
+    2. Melakukan Gap-Healing pada tabel telemetry (slot 15 menit), mengganti row offline (0.0) dengan data riil.
+    """
+    if not db_pool:
+        return
+    try:
+        with get_db_cursor() as cur:
+            # 1. Simpan rekaman detail ke tabel buffered_telemetry
+            cur.execute("""
+                INSERT INTO buffered_telemetry (
+                    device_id, phase, timestamp, epoch, seq,
+                    voltage, current, power, frequency, energy, power_factor, replayed_at
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+                ON CONFLICT (device_id, phase, epoch) DO UPDATE SET
+                    voltage = EXCLUDED.voltage,
+                    current = EXCLUDED.current,
+                    power = EXCLUDED.power,
+                    energy = EXCLUDED.energy,
+                    power_factor = EXCLUDED.power_factor,
+                    replayed_at = CURRENT_TIMESTAMP;
+            """, (device_id, phase, rec_ts, rec_epoch, seq, v, c, w, hz, tot, pf))
+
+            # 2. Gap-Healing pada tabel telemetry: pulihkan slot 15-menit yang sebelumnya tercatat offline (0.0)
+            cur.execute("""
+                UPDATE telemetry
+                SET voltage = %s, current = %s, power = %s, frequency = %s,
+                    energy = %s, power_factor = %s, offline = FALSE
+                WHERE device_id = %s AND phase = %s AND timestamp = %s AND offline = TRUE;
+            """, (v, c, w, hz, tot, pf, device_id, phase, slot_ts))
+
+            # Jika baris slot 15-menit ini belum ada sama sekali di tabel telemetry (misal VPS mati saat alat offline)
+            if cur.rowcount == 0:
+                cur.execute("""
+                    INSERT INTO telemetry (
+                        device_id, phase, timestamp, epoch,
+                        voltage, current, power, frequency, energy, power_factor, offline
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, FALSE)
+                    ON CONFLICT (device_id, phase, timestamp) DO NOTHING;
+                """, (device_id, phase, slot_ts, slot_epoch, v, c, w, hz, tot, pf))
+    except Exception as e:
+        print(f"[Buffer Processing Error] device={device_id} seq={seq}: {e}")
+
 def _on_message(client, userdata, msg):
     try:
         if msg.retain:
@@ -46,11 +96,11 @@ def _on_message(client, userdata, msg):
         topic = msg.topic
         payload = msg.payload.decode('utf-8')
         parts = topic.split('/')
-        if len(parts) >= 2 and parts[0] in ('energymeter', 'AlfaEnergy'):
+        if len(parts) >= 2 and parts[0] in ('energymeter', 'AlfaEnergy', 'SpartaEnergy'):
             # Format dinamis khusus CT & Plug: <TIPE>-<MAC> (contoh: CT-E62A34, Plug-B80E68)
             # Alat lama (EM-0001, MC3, dll.) tetap mempertahankan ID aslinya
             device_type = None
-            if len(parts) >= 4 and parts[0] == 'AlfaEnergy' and parts[1].upper() in ('CT', 'PLUG'):
+            if len(parts) >= 4 and parts[0] in ('AlfaEnergy', 'SpartaEnergy') and parts[1].upper() in ('CT', 'PLUG'):
                 device_type = 'CT' if parts[1].upper() == 'CT' else 'Plug'
                 raw_mac = parts[2].strip().rstrip(':').strip()
                 device_id = f"{device_type}-{raw_mac}"
@@ -59,7 +109,7 @@ def _on_message(client, userdata, msg):
                 device_id = parts[1].strip().rstrip(':').strip()
                 sub_parts = parts[2:]
 
-            if not device_id or device_id == 'all':
+            if not device_id or device_id == 'all' or (device_type and raw_mac.lower() == 'all'):
                 return
             _mqtt_last_seen[device_id] = time.time()
             if device_id not in _mqtt_live_data:
@@ -68,6 +118,7 @@ def _on_message(client, userdata, msg):
                 if 'status' not in _mqtt_live_data[device_id]:
                     _mqtt_live_data[device_id]['status'] = {}
                 _mqtt_live_data[device_id]['status']['device_type'] = device_type
+                _mqtt_live_data[device_id]['status']['prefix'] = parts[0]
 
             # Case 1: Timestamp -> AlfaEnergy/EM-0001/Timestamp atau energymeter/MC3/Timestamp
             if len(sub_parts) == 1 and sub_parts[0] == 'Timestamp':
@@ -224,6 +275,90 @@ def _on_message(client, userdata, msg):
                     elif payload.strip().lower() == 'online':
                         _mqtt_last_seen[device_id] = time.time()
 
+                elif sub == 'EVENT':
+                    # Notifikasi Event Lifecycle (InternetRestored, SyncComplete, dll) dari LittleFS buffer
+                    try:
+                        ev_data = json.loads(payload)
+                        event_name = ev_data.get('Event', '')
+                        if event_name == 'InternetRestored':
+                            buffered_cnt = int(ev_data.get('BufferedRecords', 0))
+                            downtime_sec = int(ev_data.get('DowntimeSec', 0))
+                            _buffer_sync_status[device_id] = {
+                                'status': 'SYNCING',
+                                'total': buffered_cnt,
+                                'replayed': 0,
+                                'downtime_sec': downtime_sec,
+                                'start_time': time.time(),
+                                'last_updated': time.time()
+                            }
+                            if 'status' not in _mqtt_live_data[device_id]:
+                                _mqtt_live_data[device_id]['status'] = {}
+                            _mqtt_live_data[device_id]['status']['buffer_sync'] = _buffer_sync_status[device_id]
+                            print(f"[Buffer EVENT] {device_id} Internet pulih! Downtime: {downtime_sec}s, buffered records: {buffered_cnt}")
+                        elif event_name == 'SyncComplete':
+                            replayed_cnt = int(ev_data.get('ReplayedRecords', 0))
+                            if device_id in _buffer_sync_status:
+                                _buffer_sync_status[device_id]['status'] = 'COMPLETED'
+                                _buffer_sync_status[device_id]['replayed'] = replayed_cnt
+                                _buffer_sync_status[device_id]['last_updated'] = time.time()
+                            if 'status' not in _mqtt_live_data[device_id]:
+                                _mqtt_live_data[device_id]['status'] = {}
+                            _mqtt_live_data[device_id]['status']['buffer_sync'] = {
+                                'status': 'COMPLETED',
+                                'total': replayed_cnt,
+                                'replayed': replayed_cnt,
+                                'last_updated': time.time()
+                            }
+                            print(f"[Buffer EVENT] {device_id} Replay buffer LittleFS selesai! Total: {replayed_cnt} records.")
+                    except Exception as ev_err:
+                        print(f"[Buffer EVENT Error] {device_id}: {ev_err}")
+
+                elif sub == 'HISTORY':
+                    # Offline Data Buffer Replay Engine: memproses streaming history LittleFS secara terisolasi
+                    try:
+                        h_data = json.loads(payload)
+                        rec_time_str = h_data.get('Time')
+                        seq = int(h_data.get('Seq', 0))
+                        e_obj = h_data.get('ENERGY') or {}
+
+                        # Perbarui progress di tracker sync
+                        if device_id in _buffer_sync_status:
+                            _buffer_sync_status[device_id]['replayed'] = seq
+                            _buffer_sync_status[device_id]['last_updated'] = time.time()
+                            if 'status' in _mqtt_live_data.get(device_id, {}):
+                                _mqtt_live_data[device_id]['status']['buffer_sync'] = _buffer_sync_status[device_id]
+
+                        if rec_time_str and e_obj:
+                            try:
+                                dt_rec = datetime.fromisoformat(rec_time_str)
+                            except Exception:
+                                dt_rec = datetime.strptime(rec_time_str, '%Y-%m-%d %H:%M:%S')
+                            if dt_rec.tzinfo is None:
+                                dt_rec = dt_rec.replace(tzinfo=_WIB)
+
+                            rec_epoch_ms = int(dt_rec.timestamp() * 1000)
+                            rec_ts_str = dt_rec.strftime('%H:%M:%S %d/%m/%Y')
+
+                            # Tentukan slot 15-menit
+                            slot_m = (dt_rec.minute // 15) * 15
+                            slot_dt = datetime(dt_rec.year, dt_rec.month, dt_rec.day, dt_rec.hour, slot_m, 0, tzinfo=_WIB)
+                            slot_ts = f'{slot_dt.strftime("%H")}:{str(slot_m).zfill(2)} {slot_dt.strftime("%d/%m/%Y")}'
+                            slot_epoch_ms = int(slot_dt.timestamp() * 1000)
+
+                            ph = 'CT' if (device_type == 'CT' or device_id.upper().startswith('CT-')) else ('PG' if (device_type == 'Plug' or device_id.upper().startswith('PLUG-')) else 'L1')
+
+                            v = float(e_obj.get('Voltage') or 0.0)
+                            c = float(e_obj.get('Current') or 0.0)
+                            w = float(e_obj.get('Power') or 0.0)
+                            tot = float(e_obj.get('Total') or 0.0)
+                            pf = float(e_obj.get('Factor', e_obj.get('PowerFactor', 0.0)) or 0.0)
+                            hz = float(e_obj.get('Frequency') or 50.0)
+
+                            _process_buffered_record(device_id, ph, rec_ts_str, rec_epoch_ms, slot_ts, slot_epoch_ms, seq, v, c, w, tot, pf, hz)
+                    except Exception as h_err:
+                        print(f"[Buffer HISTORY Error] {device_id}: {h_err}")
+                    return  # TERISOLASI: Jangan biarkan menimpa _mqtt_live_data agar visual live tetap akurat!
+
             # Case 3A: AlfaEnergy v1.3.0 1P -> AlfaEnergy/<DEVICE_ID>/1P/<LOAD_TYPE>/<UNIT_NUMBER> (sub_parts: ['1P', ...])
             elif len(sub_parts) == 3 and sub_parts[0] == '1P':
                 phase = f"{sub_parts[1]}_{sub_parts[2]}"
@@ -319,6 +454,7 @@ def _start_mqtt():
             client.tls_set()
 
         def on_connect(c, userdata, flags, rc, properties=None):
+            c.subscribe("SpartaEnergy/#")
             c.subscribe("AlfaEnergy/#")
             c.subscribe("energymeter/#")
         client.on_connect = on_connect
@@ -530,6 +666,23 @@ def init_db():
                             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                         );
                     """)
+                    cur.execute("""
+                        CREATE TABLE IF NOT EXISTS buffered_telemetry (
+                            id SERIAL PRIMARY KEY,
+                            device_id VARCHAR(50) NOT NULL,
+                            phase VARCHAR(50) NOT NULL,
+                            timestamp VARCHAR(50) NOT NULL,
+                            epoch BIGINT NOT NULL,
+                            seq INT DEFAULT 0,
+                            voltage FLOAT DEFAULT 0.0,
+                            current FLOAT DEFAULT 0.0,
+                            power FLOAT DEFAULT 0.0,
+                            frequency FLOAT DEFAULT 50.0,
+                            energy FLOAT DEFAULT 0.0,
+                            power_factor FLOAT DEFAULT 0.0,
+                            replayed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                        );
+                    """)
                     # Alter table add column if not exists
                     columns_to_add = [
                         ('history', 'phase_name', 'VARCHAR(100) DEFAULT NULL'),
@@ -564,6 +717,22 @@ def init_db():
                     create_index_safe('idx_history_device_session', "CREATE INDEX idx_history_device_session ON history(device_id, session_id);")
                     create_index_safe('idx_history_session_epoch', "CREATE INDEX idx_history_session_epoch ON history(session_id, epoch);")
                     create_index_safe('idx_history_dev_sess_epoch', "CREATE INDEX idx_history_dev_sess_epoch ON history(device_id, session_id, epoch);")
+                    create_index_safe('idx_buffered_dev_ph_epoch_uniq', "CREATE UNIQUE INDEX idx_buffered_dev_ph_epoch_uniq ON buffered_telemetry(device_id, phase, epoch);")
+                    create_index_safe('idx_buffered_dev_epoch', "CREATE INDEX idx_buffered_dev_epoch ON buffered_telemetry(device_id, epoch);")
+
+                    try:
+                        cur.execute("SELECT 1 FROM pg_indexes WHERE indexname = 'idx_telemetry_dev_ph_ts_uniq'")
+                        if not cur.fetchone():
+                            cur.execute("""
+                                DELETE FROM telemetry a USING telemetry b
+                                WHERE a.id < b.id
+                                  AND a.device_id = b.device_id
+                                  AND a.phase = b.phase
+                                  AND a.timestamp = b.timestamp;
+                            """)
+                            cur.execute("CREATE UNIQUE INDEX idx_telemetry_dev_ph_ts_uniq ON telemetry(device_id, phase, timestamp);")
+                    except Exception as ue:
+                        print(f"[init_db] Note creating unique index for telemetry: {ue}")
 
                     conn.commit()
                     print("Database tables & indexes initialized successfully.")
@@ -1128,8 +1297,13 @@ def get_history_buffer(device_id: str):
         with get_db_cursor() as cur:
             cur.execute("""
                 SELECT phase, epoch, voltage, current, power, frequency, energy, power_factor
-                FROM telemetry
-                WHERE device_id = %s AND epoch >= %s
+                FROM (
+                    SELECT phase, epoch, voltage, current, power, frequency, energy, power_factor
+                    FROM telemetry
+                    WHERE device_id = %s AND epoch >= %s
+                    ORDER BY epoch DESC
+                    LIMIT 2400
+                ) sub
                 ORDER BY epoch ASC
             """, (device_id, cutoff_ms))
             rows = cur.fetchall()
@@ -1437,7 +1611,8 @@ def list_devices():
                 'lastSeen': (raw or {}).get('Timestamp') or '---',
                 'phases': phases,
                 'phaseCount': len(phases),
-                'storeId': None
+                'storeId': None,
+                'bufferSync': _buffer_sync_status.get(did, None)
             })
         return jsonify(devices)
 
@@ -1504,7 +1679,8 @@ def list_devices():
                 'phaseCount': len(phases),
                 'storeId': store_id,
                 'latitude': lat,
-                'longitude': lng
+                'longitude': lng,
+                'bufferSync': _buffer_sync_status.get(did, None)
             })
     except Exception as e:
         print(f"Error listing devices: {e}")
@@ -1630,6 +1806,102 @@ def delete_device_permanently(device_id: str):
         return jsonify({'ok': True, 'device_id': device_id})
     except Exception as e:
         print(f"Error in delete_device_permanently: {e}")
+        print(f"[API Error] {request.path}: {e}")
+        return jsonify({'ok': False, 'error': 'Internal Server Error'}), 500
+
+@app.route('/api/devices/<device_id>/buffer-sync')
+def get_device_buffer_sync(device_id: str):
+    """Mengembalikan status progres sinkronisasi replay buffer LittleFS saat ini."""
+    sync_info = _buffer_sync_status.get(device_id)
+    if not sync_info:
+        count = 0
+        if db_pool:
+            try:
+                with get_db_cursor() as cur:
+                    cur.execute("SELECT COUNT(*) FROM buffered_telemetry WHERE device_id = %s", (device_id,))
+                    count = cur.fetchone()[0]
+            except Exception:
+                pass
+        sync_info = {'status': 'IDLE', 'total': count, 'replayed': count, 'downtime_sec': 0}
+
+    total = sync_info.get('total', 0)
+    replayed = sync_info.get('replayed', 0)
+    percent = round((replayed / total * 100.0), 1) if total > 0 else 100.0
+    return jsonify({
+        'deviceId': device_id,
+        'status': sync_info.get('status', 'IDLE'),
+        'total': total,
+        'replayed': replayed,
+        'percent': min(100.0, percent),
+        'downtimeSec': sync_info.get('downtime_sec', 0),
+        'lastUpdated': sync_info.get('last_updated', 0)
+    })
+
+@app.route('/api/devices/<device_id>/buffered-telemetry')
+def get_device_buffered_telemetry(device_id: str):
+    """Mengembalikan rekaman granular offline buffer per menit dari tabel buffered_telemetry."""
+    if not db_pool:
+        return jsonify({'error': 'Database tidak aktif'}), 503
+    try:
+        limit = min(max(1, int(request.args.get('limit', 500))), 5000)
+        with get_db_cursor() as cur:
+            cur.execute("""
+                SELECT phase, timestamp, epoch, seq, voltage, current, power, frequency, energy, power_factor, replayed_at
+                FROM buffered_telemetry
+                WHERE device_id = %s
+                ORDER BY epoch DESC
+                LIMIT %s
+            """, (device_id, limit))
+            rows = cur.fetchall()
+
+        records = []
+        for r in rows:
+            records.append({
+                'phase': r[0],
+                'timestamp': r[1],
+                'epoch': r[2],
+                'seq': r[3],
+                'voltage': r[4],
+                'current': r[5],
+                'power': r[6],
+                'frequency': r[7],
+                'energy': r[8],
+                'powerFactor': r[9],
+                'replayedAt': r[10].isoformat() if r[10] else None
+            })
+        return jsonify({
+            'deviceId': device_id,
+            'count': len(records),
+            'records': records
+        })
+    except Exception as e:
+        print(f"[API Error] {request.path}: {e}")
+        return jsonify({'error': 'Internal Server Error'}), 500
+
+@app.route('/api/devices/<device_id>/buffer/clear', methods=['POST'])
+def clear_device_buffer(device_id: str):
+    """Mengirim perintah BufferClear ke perangkat untuk mengosongkan storage LittleFS."""
+    global _mqtt_client
+    if not _mqtt_client:
+        return jsonify({'ok': False, 'error': 'MQTT client tidak aktif'}), 503
+
+    topics = []
+    if device_id.upper().startswith('CT-'):
+        raw_mac = device_id[3:]
+        topics = [f"SpartaEnergy/CT/{raw_mac}/cmnd/BufferClear", f"AlfaEnergy/CT/{raw_mac}/cmnd/BufferClear"]
+    elif device_id.lower().startswith('plug-'):
+        raw_mac = device_id[5:]
+        topics = [f"SpartaEnergy/Plug/{raw_mac}/cmnd/BufferClear", f"AlfaEnergy/Plug/{raw_mac}/cmnd/BufferClear"]
+    else:
+        topics = [f"SpartaEnergy/{device_id}/cmnd/BufferClear", f"AlfaEnergy/{device_id}/cmnd/BufferClear"]
+
+    try:
+        for t in topics:
+            _mqtt_client.publish(t, "1")
+        if device_id in _buffer_sync_status:
+            _buffer_sync_status[device_id] = {'status': 'CLEARED', 'total': 0, 'replayed': 0}
+        return jsonify({'ok': True, 'deviceId': device_id, 'command': 'BufferClear'})
+    except Exception as e:
         print(f"[API Error] {request.path}: {e}")
         return jsonify({'ok': False, 'error': 'Internal Server Error'}), 500
 
@@ -1911,8 +2183,17 @@ def capture_start():
         # MQTT publish & save state file dijalankan DI LUAR LOCK
         if _mqtt_client:
             try:
+                _mqtt_client.publish(f"SpartaEnergy/{did}/cmd/resetEnergy", "1")
                 _mqtt_client.publish(f"AlfaEnergy/{did}/cmd/resetEnergy", "1")
                 _mqtt_client.publish(f"energymeter/{did}/cmd/resetEnergy", "1")
+                if did.lower().startswith('plug-'):
+                    mac = did[5:]
+                    _mqtt_client.publish(f"SpartaEnergy/Plug/{mac}/cmnd/EnergyReset", "0")
+                    _mqtt_client.publish(f"AlfaEnergy/Plug/{mac}/cmnd/EnergyReset", "0")
+                elif did.upper().startswith('CT-'):
+                    mac = did[3:]
+                    _mqtt_client.publish(f"SpartaEnergy/CT/{mac}/cmnd/EnergyReset", "0")
+                    _mqtt_client.publish(f"AlfaEnergy/CT/{mac}/cmnd/EnergyReset", "0")
             except Exception:
                 pass
         persisted = _save_capture_states(did)
@@ -2346,7 +2627,7 @@ def get_device_chart_data(device_id: str):
         date_str = request.args.get('date')
         range_type = request.args.get('range', 'day')
         
-        if not date_str:
+        if not date_str or date_str in ('null', 'undefined', ''):
             date_str = datetime.now(_WIB).strftime('%d/%m/%Y')
             
         if '-' in date_str:
