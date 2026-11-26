@@ -684,16 +684,28 @@
                         <div class="control-divider"></div>
                         <div class="sf-pkg-meta">
                             <div><span>Status File Lokal:</span> <strong id="sfLocalStatus">Mengecek…</strong></div>
+                            <div><span>Akses GitHub Private:</span> <strong id="sfTokenStatus">Mengecek…</strong></div>
                             <div><span>SHA-256:</span> <code id="sfMetaSha" style="font-size:11px; word-break:break-all;">-</code></div>
                         </div>
                         <div class="sf-form" style="margin-top: 10px;">
                             <div class="sf-field">
                                 <label for="sfCfgMode">Mode Sumber Download</label>
                                 <select id="sfCfgMode">
-                                    <option value="auto">Auto (Pakai File Installer Lokal jika ada, fallback GitHub)</option>
+                                    <option value="auto">Auto (Lokal Server jika ada, else Proxy GitHub Private)</option>
+                                    <option value="github_private">Proxy Stream dari GitHub Private (User tanpa akses GitHub)</option>
                                     <option value="local">Installer Server Lokal (backend/downloads)</option>
-                                    <option value="github">Direct Redirect ke GitHub Release</option>
+                                    <option value="github_redirect">Direct Redirect GitHub URL (Hanya Repo Publik)</option>
                                 </select>
+                            </div>
+                            <div class="sf-form-row">
+                                <div class="sf-field">
+                                    <label for="sfCfgGithubRepo">GitHub Repository (owner/repo)</label>
+                                    <input type="text" id="sfCfgGithubRepo" placeholder="buildingprocess25/SpartaFlash">
+                                </div>
+                                <div class="sf-field">
+                                    <label for="sfCfgGithubTag">Release Tag (`latest` / `v2.1.6`)</label>
+                                    <input type="text" id="sfCfgGithubTag" placeholder="latest">
+                                </div>
                             </div>
                             <div class="sf-form-row">
                                 <div class="sf-field">
@@ -706,8 +718,8 @@
                                 </div>
                             </div>
                             <div class="sf-field">
-                                <label for="sfCfgGithubUrl">Link GitHub Release (untuk redirect nanti)</label>
-                                <input type="url" id="sfCfgGithubUrl" placeholder="https://github.com/rohidfkra777/SpartaFlash/releases/download/...">
+                                <label for="sfCfgGithubUrl">Fallback Direct URL (khusus mode Direct Redirect)</label>
+                                <input type="url" id="sfCfgGithubUrl" placeholder="https://github.com/buildingprocess25/SpartaFlash/releases/download/...">
                             </div>
                             <div class="sf-field">
                                 <label for="sfCfgSha256">Checksum SHA-256</label>

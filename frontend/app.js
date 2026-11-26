@@ -6415,7 +6415,8 @@ async function loadSpartaFlashInfo() {
         if ($('sfMetaTitle')) $('sfMetaTitle').textContent = `SpartaFlash ${cfg.version || ''}`.trim();
         if ($('sfMetaSha')) $('sfMetaSha').textContent = cfg.sha256 || '-';
 
-        const sizeText = cfg.local_available ? ` (${_sfFormatBytes(cfg.local_size_bytes)})` : '';
+        const activeBytes = cfg.effective_source === 'local' ? cfg.local_size_bytes : (cfg.remote_size_bytes || cfg.local_size_bytes);
+        const sizeText = activeBytes ? ` (${_sfFormatBytes(activeBytes)})` : '';
         if ($('sfDownloadBtnText')) {
             $('sfDownloadBtnText').textContent = `Daftar & Download SpartaFlash ${cfg.version || ''}${sizeText}`;
         }
@@ -6423,7 +6424,16 @@ async function loadSpartaFlashInfo() {
         if ($('sfLocalStatus')) {
             $('sfLocalStatus').textContent = cfg.local_available
                 ? `Tersedia di Server (${cfg.filename}, ${_sfFormatBytes(cfg.local_size_bytes)})`
-                : `Belum ada di backend/downloads/ (${cfg.filename})`;
+                : `Kosong di backend/downloads/`;
+        }
+        if ($('sfTokenStatus')) {
+            if (cfg.github_token_configured) {
+                $('sfTokenStatus').textContent = cfg.remote_available
+                    ? `Terhubung ke ${cfg.github_repo} (${cfg.version}, ${_sfFormatBytes(cfg.remote_size_bytes)})`
+                    : `Token aktif — ${cfg.remote_error || 'cek repo/tag'}`;
+            } else {
+                $('sfTokenStatus').textContent = 'Belum diset (set env SPARTAFLASH_GITHUB_TOKEN di VPS)';
+            }
         }
 
         const badge = $('sfSourceBadge');
@@ -6432,9 +6442,15 @@ async function loadSpartaFlashInfo() {
             if (cfg.effective_source === 'local') {
                 badge.classList.add('sf-badge-local');
                 badge.textContent = 'Sumber Aktif: Installer Server Lokal';
-            } else if (cfg.effective_source === 'github') {
+            } else if (cfg.effective_source === 'github_private') {
+                badge.classList.add('sf-badge-local');
+                badge.textContent = `Sumber Aktif: Proxy Private GitHub (${cfg.github_repo})`;
+            } else if (cfg.effective_source === 'github_redirect') {
                 badge.classList.add('sf-badge-github');
-                badge.textContent = 'Sumber Aktif: Direct GitHub Release';
+                badge.textContent = 'Sumber Aktif: Direct GitHub Redirect';
+            } else if (cfg.effective_source === 'missing_github_token') {
+                badge.classList.add('sf-badge-warn');
+                badge.textContent = 'Token GitHub Private Belum Diset di Server';
             } else {
                 badge.classList.add('sf-badge-warn');
                 badge.textContent = 'File Installer Lokal Belum Ada';
@@ -6442,6 +6458,8 @@ async function loadSpartaFlashInfo() {
         }
 
         if ($('sfCfgMode')) $('sfCfgMode').value = cfg.mode || 'auto';
+        if ($('sfCfgGithubRepo')) $('sfCfgGithubRepo').value = cfg.github_repo || '';
+        if ($('sfCfgGithubTag')) $('sfCfgGithubTag').value = cfg.github_tag || 'latest';
         if ($('sfCfgVersion')) $('sfCfgVersion').value = cfg.version || '';
         if ($('sfCfgFilename')) $('sfCfgFilename').value = cfg.filename || '';
         if ($('sfCfgGithubUrl')) $('sfCfgGithubUrl').value = cfg.github_url || '';
@@ -6472,9 +6490,12 @@ async function loadSpartaFlashDownloads() {
         }
 
         tbody.innerHTML = rows.map((r, idx) => {
-            const srcBadge = r.source_mode === 'github'
-                ? '<span class="sf-badge sf-badge-github">GitHub</span>'
-                : '<span class="sf-badge sf-badge-local">Lokal</span>';
+            let srcBadge = '<span class="sf-badge sf-badge-local">Lokal</span>';
+            if (r.source_mode === 'github_private') {
+                srcBadge = '<span class="sf-badge sf-badge-local">GitHub Proxy</span>';
+            } else if (r.source_mode === 'github' || r.source_mode === 'github_redirect') {
+                srcBadge = '<span class="sf-badge sf-badge-github">GitHub Direct</span>';
+            }
             const statusText = r.download_hits > 0
                 ? `<span class="sf-badge sf-badge-local">Downloaded (${r.download_hits}x)</span>`
                 : '<span class="sf-badge sf-badge-warn">Registered</span>';
@@ -6543,16 +6564,42 @@ async function submitSpartaFlashDownload(event) {
     }
 }
 
+async function _sfPortalFetchJson(url, options = {}) {
+    let token = sessionStorage.getItem('sem_portal_token') || '';
+    const makeHeaders = (tok) => {
+        const h = { ...(options.headers || {}) };
+        if (tok) h['X-Portal-Token'] = tok;
+        return h;
+    };
+    let res = await fetch(url, { ...options, headers: makeHeaders(token) });
+    if (res.status === 401) {
+        const entered = prompt('Masukkan Portal Control Token (X-Portal-Token) untuk aksi admin:');
+        if (entered && entered.trim()) {
+            token = entered.trim();
+            sessionStorage.setItem('sem_portal_token', token);
+            res = await fetch(url, { ...options, headers: makeHeaders(token) });
+        }
+    }
+    const contentType = res.headers.get('content-type') || '';
+    if (!contentType.includes('application/json')) {
+        const text = await res.text();
+        throw new Error(`HTTP ${res.status}: ${(text || '').slice(0, 120)}`);
+    }
+    return await res.json();
+}
+
 async function saveSpartaFlashConfig() {
     try {
         const payload = {
             mode: $('sfCfgMode')?.value || 'auto',
+            github_repo: ($('sfCfgGithubRepo')?.value || '').trim(),
+            github_tag: ($('sfCfgGithubTag')?.value || 'latest').trim(),
             version: ($('sfCfgVersion')?.value || '').trim(),
             filename: ($('sfCfgFilename')?.value || '').trim(),
             github_url: ($('sfCfgGithubUrl')?.value || '').trim(),
             sha256: ($('sfCfgSha256')?.value || '').trim(),
         };
-        const res = await safeFetchJson('/api/spartaflash/config', {
+        const res = await _sfPortalFetchJson('/api/spartaflash/config', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload),
@@ -6574,7 +6621,7 @@ async function deleteSpartaFlashRecord(id, name) {
         : confirm(`Hapus catatan unduhan atas nama "${name}"?`);
     if (!ok) return;
     try {
-        const res = await safeFetchJson(`/api/spartaflash/downloads/${id}`, { method: 'DELETE' });
+        const res = await _sfPortalFetchJson(`/api/spartaflash/downloads/${id}`, { method: 'DELETE' });
         if (!res.ok) {
             showModal('Gagal Menghapus', res.error || 'Record tidak ditemukan.', 'error');
             return;

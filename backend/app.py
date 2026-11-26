@@ -3,7 +3,8 @@ import os, re, threading, time, hashlib, hmac, json, logging, contextlib, csv, i
 from collections import deque
 from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
-from flask import Flask, jsonify, render_template, request, send_file, redirect, Response
+from flask import Flask, jsonify, render_template, request, send_file, redirect, Response, stream_with_context
+import requests as http_requests
 from werkzeug.exceptions import HTTPException
 import paho.mqtt.client as paho_mqtt
 import psycopg2
@@ -2793,6 +2794,18 @@ _SPARTAFLASH_DOWNLOADS_DIR = os.environ.get(
 )
 _SPARTAFLASH_SQLITE_FALLBACK = os.path.join(_SPARTAFLASH_DOWNLOADS_DIR, "spartaflash_fallback.sqlite3")
 _spartaflash_sqlite_lock = threading.Lock()
+_spartaflash_gh_cache = {"key": None, "expires": 0.0, "asset": None, "error": ""}
+
+
+def _get_spartaflash_github_token() -> str:
+    return (os.environ.get("SPARTAFLASH_GITHUB_TOKEN") or os.environ.get("GITHUB_TOKEN") or "").strip()
+
+
+def _parse_github_release_url(url: str) -> tuple[str, str, str]:
+    m = re.match(r"^https?://github\.com/([^/]+/[^/]+)/releases/download/([^/]+)/([^/?#]+)", (url or "").strip(), re.I)
+    if m:
+        return m.group(1), m.group(2), m.group(3)
+    return "", "", ""
 
 
 def _ensure_spartaflash_sqlite() -> sqlite3.Connection:
@@ -2857,9 +2870,86 @@ def _default_spartaflash_config() -> dict:
         "mode": (os.environ.get("SPARTAFLASH_DOWNLOAD_MODE") or "auto").strip().lower(),
         "version": (os.environ.get("SPARTAFLASH_VERSION") or "v2.1.6").strip(),
         "filename": os.path.basename((os.environ.get("SPARTAFLASH_INSTALLER_FILE") or "SpartaFlash_Setup_v2.1.6_Windows_x64.exe").strip()),
-        "github_url": (os.environ.get("SPARTAFLASH_GITHUB_URL") or "https://github.com/rohidfkra777/SpartaFlash/releases/download/v2.1.6/SpartaFlash_Setup_v2.1.6_Windows_x64.exe").strip(),
+        "github_repo": (os.environ.get("SPARTAFLASH_GITHUB_REPO") or "buildingprocess25/SpartaFlash").strip(),
+        "github_tag": (os.environ.get("SPARTAFLASH_GITHUB_TAG") or "latest").strip(),
+        "github_url": (os.environ.get("SPARTAFLASH_GITHUB_URL") or "https://github.com/buildingprocess25/SpartaFlash/releases/download/v2.1.6/SpartaFlash_Setup_v2.1.6_Windows_x64.exe").strip(),
         "sha256": (os.environ.get("SPARTAFLASH_SHA256") or "8563333199744e1fe2bf0b8ecc892e700564868d0a01475c539b35dd2cd9fbdc").strip(),
     }
+
+
+def _resolve_github_private_asset(cfg: dict, force_refresh: bool = False) -> tuple[dict | None, str]:
+    token = _get_spartaflash_github_token()
+    if not token:
+        return None, "SPARTAFLASH_GITHUB_TOKEN belum dikonfigurasi di environment server."
+
+    repo = (cfg.get("github_repo") or "").strip().strip("/")
+    tag = (cfg.get("github_tag") or "latest").strip()
+    want_name = os.path.basename(cfg.get("filename") or "")
+
+    if not repo and cfg.get("github_url"):
+        parsed_repo, parsed_tag, parsed_name = _parse_github_release_url(cfg["github_url"])
+        repo = parsed_repo or repo
+        tag = parsed_tag or tag
+        want_name = parsed_name or want_name
+
+    if not repo or "/" not in repo:
+        return None, "Format GitHub repository tidak valid (contoh: buildingprocess25/SpartaFlash)."
+
+    cache_key = f"{repo}|{tag}|{want_name}|{hashlib.sha256(token.encode('utf-8')).hexdigest()[:8]}"
+    now = time.time()
+    if not force_refresh and _spartaflash_gh_cache["key"] == cache_key and _spartaflash_gh_cache["expires"] > now:
+        return _spartaflash_gh_cache["asset"], _spartaflash_gh_cache["error"]
+
+    api_url = (
+        f"https://api.github.com/repos/{repo}/releases/latest"
+        if tag.lower() == "latest"
+        else f"https://api.github.com/repos/{repo}/releases/tags/{tag}"
+    )
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+        "User-Agent": "SpartaEnergyPortal/1.0",
+    }
+    try:
+        resp = http_requests.get(api_url, headers=headers, timeout=10)
+        if resp.status_code != 200:
+            err = f"GitHub API HTTP {resp.status_code} saat mengakses {repo} ({tag})."
+            _spartaflash_gh_cache.update({"key": cache_key, "expires": now + 20, "asset": None, "error": err})
+            return None, err
+
+        rel = resp.json()
+        assets = rel.get("assets") or []
+        chosen = None
+        if want_name and tag.lower() != "latest":
+            chosen = next((a for a in assets if a.get("name") == want_name), None)
+        if chosen is None and want_name:
+            chosen = next((a for a in assets if a.get("name") == want_name), None)
+        if chosen is None:
+            chosen = next((a for a in assets if str(a.get("name") or "").lower().endswith(".exe")), None)
+        if chosen is None:
+            err = f"Asset installer (.exe) tidak ditemukan pada release {rel.get('tag_name') or tag} di {repo}."
+            _spartaflash_gh_cache.update({"key": cache_key, "expires": now + 20, "asset": None, "error": err})
+            return None, err
+
+        digest = str(chosen.get("digest") or "")
+        if digest.startswith("sha256:"):
+            digest = digest.split(":", 1)[1]
+        asset_info = {
+            "id": chosen.get("id"),
+            "url": chosen.get("url"),
+            "name": os.path.basename(chosen.get("name") or want_name),
+            "size": int(chosen.get("size") or 0),
+            "digest": digest,
+            "tag_name": str(rel.get("tag_name") or tag),
+            "repo": repo,
+        }
+        _spartaflash_gh_cache.update({"key": cache_key, "expires": now + 60, "asset": asset_info, "error": ""})
+        return asset_info, ""
+    except Exception as e:
+        err = f"Gagal menghubungi GitHub API: {e}"
+        _spartaflash_gh_cache.update({"key": cache_key, "expires": now + 15, "asset": None, "error": err})
+        return None, err
 
 
 def _get_spartaflash_config() -> dict:
@@ -2885,12 +2975,14 @@ def _get_spartaflash_config() -> dict:
         print(f"[SpartaFlash] Failed reading config: {e}")
 
     if isinstance(saved, dict):
-        for k in ("mode", "version", "filename", "github_url", "sha256"):
+        for k in ("mode", "version", "filename", "github_repo", "github_tag", "github_url", "sha256"):
             val = str(saved.get(k) or "").strip()
             if val:
                 cfg[k] = os.path.basename(val) if k == "filename" else val
 
-    if cfg["mode"] not in ("auto", "local", "github"):
+    if cfg["mode"] == "github":
+        cfg["mode"] = "github_private"
+    if cfg["mode"] not in ("auto", "local", "github_private", "github_redirect"):
         cfg["mode"] = "auto"
 
     safe_filename = os.path.basename(cfg["filename"]) or "SpartaFlash_Setup_v2.1.6_Windows_x64.exe"
@@ -2898,17 +2990,39 @@ def _get_spartaflash_config() -> dict:
     local_path = os.path.join(_SPARTAFLASH_DOWNLOADS_DIR, safe_filename)
     local_available = os.path.isfile(local_path)
     local_size_bytes = os.path.getsize(local_path) if local_available else 0
+    token_configured = bool(_get_spartaflash_github_token())
 
-    if cfg["mode"] == "github":
-        effective_source = "github"
+    if cfg["mode"] == "github_redirect":
+        effective_source = "github_redirect"
+    elif cfg["mode"] == "github_private":
+        effective_source = "github_private" if token_configured else "missing_github_token"
     elif cfg["mode"] == "local":
         effective_source = "local" if local_available else "missing_local"
     else:
-        effective_source = "local" if local_available else "github"
+        if local_available:
+            effective_source = "local"
+        elif token_configured:
+            effective_source = "github_private"
+        else:
+            effective_source = "missing_github_token"
+
+    remote_asset = None
+    remote_error = ""
+    if token_configured and effective_source in ("github_private", "local"):
+        remote_asset, remote_error = _resolve_github_private_asset(cfg)
+        if effective_source == "github_private" and remote_asset:
+            cfg["version"] = remote_asset["tag_name"] or cfg["version"]
+            cfg["filename"] = remote_asset["name"] or cfg["filename"]
+            if remote_asset.get("digest"):
+                cfg["sha256"] = remote_asset["digest"]
 
     cfg["local_path"] = local_path
     cfg["local_available"] = local_available
     cfg["local_size_bytes"] = local_size_bytes
+    cfg["github_token_configured"] = token_configured
+    cfg["remote_available"] = bool(remote_asset)
+    cfg["remote_size_bytes"] = remote_asset["size"] if remote_asset else 0
+    cfg["remote_error"] = remote_error
     cfg["effective_source"] = effective_source
     return cfg
 
@@ -2918,6 +3032,8 @@ def _save_spartaflash_config(new_cfg: dict) -> dict:
         "mode": new_cfg["mode"],
         "version": new_cfg["version"],
         "filename": os.path.basename(new_cfg["filename"]),
+        "github_repo": new_cfg["github_repo"],
+        "github_tag": new_cfg["github_tag"],
         "github_url": new_cfg["github_url"],
         "sha256": new_cfg["sha256"],
     }
@@ -2941,6 +3057,7 @@ def _save_spartaflash_config(new_cfg: dict) -> dict:
                 conn.commit()
             finally:
                 conn.close()
+    _spartaflash_gh_cache["expires"] = 0.0
     return _get_spartaflash_config()
 
 
@@ -3050,20 +3167,27 @@ def spartaflash_update_config():
         body = request.get_json(silent=True) or {}
         cur_cfg = _get_spartaflash_config()
         mode = (body.get("mode") or cur_cfg["mode"]).strip().lower()
+        if mode == "github":
+            mode = "github_private"
         version = (body.get("version") or cur_cfg["version"]).strip()
         filename = os.path.basename((body.get("filename") or cur_cfg["filename"]).strip())
+        github_repo = (body.get("github_repo") or cur_cfg["github_repo"]).strip().strip("/")
+        github_tag = (body.get("github_tag") or cur_cfg["github_tag"]).strip()
         github_url = (body.get("github_url") or cur_cfg["github_url"]).strip()
         sha256 = (body.get("sha256") or cur_cfg["sha256"]).strip()
 
-        if mode not in ("auto", "local", "github"):
-            return jsonify({"ok": False, "error": "Mode harus 'auto', 'local', atau 'github'."}), 400
+        if mode not in ("auto", "local", "github_private", "github_redirect"):
+            return jsonify({"ok": False, "error": "Mode harus 'auto', 'local', 'github_private', atau 'github_redirect'."}), 400
         if github_url and not (github_url.startswith("https://") or github_url.startswith("http://")):
             return jsonify({"ok": False, "error": "GitHub URL harus diawali https:// atau http://."}), 400
         if not version or not filename:
             return jsonify({"ok": False, "error": "Version dan filename wajib diisi."}), 400
+        if not github_repo or "/" not in github_repo:
+            return jsonify({"ok": False, "error": "GitHub Repo harus format owner/repo."}), 400
 
         updated = _save_spartaflash_config({
             "mode": mode, "version": version, "filename": filename,
+            "github_repo": github_repo, "github_tag": github_tag or "latest",
             "github_url": github_url, "sha256": sha256,
         })
         public_cfg = {k: v for k, v in updated.items() if k != "local_path"}
@@ -3093,8 +3217,18 @@ def spartaflash_register_download():
         if cfg["effective_source"] == "missing_local":
             return jsonify({
                 "ok": False,
-                "error": f"File installer '{cfg['filename']}' belum tersedia di server (backend/downloads/). Upload file atau ubah sumber ke GitHub Release.",
+                "error": f"File installer '{cfg['filename']}' belum tersedia di server (backend/downloads/). Upload file atau ubah sumber ke GitHub Private Proxy.",
             }), 404
+        if cfg["effective_source"] == "missing_github_token":
+            return jsonify({
+                "ok": False,
+                "error": "Akses GitHub Private belum aktif (SPARTAFLASH_GITHUB_TOKEN belum diset di environment server).",
+            }), 503
+        if cfg["effective_source"] == "github_private" and not cfg.get("remote_available"):
+            return jsonify({
+                "ok": False,
+                "error": cfg.get("remote_error") or "Gagal memverifikasi file release di repository private GitHub.",
+            }), 502
 
         token = secrets.token_urlsafe(24)
         now_dt = datetime.now(_WIB)
@@ -3195,6 +3329,11 @@ def spartaflash_execute_download(token: str):
                 "ok": False,
                 "error": f"File installer '{cfg['filename']}' belum tersedia di server.",
             }), 404
+        if cfg["effective_source"] == "missing_github_token":
+            return jsonify({
+                "ok": False,
+                "error": "SPARTAFLASH_GITHUB_TOKEN belum dikonfigurasi di server.",
+            }), 503
 
         effective_source = cfg["effective_source"]
         if _has_pg_pool():
@@ -3230,6 +3369,62 @@ def spartaflash_execute_download(token: str):
                 download_name=cfg["filename"],
                 conditional=True,
             )
+
+        if effective_source == "github_private":
+            asset_info, err = _resolve_github_private_asset(cfg)
+            if not asset_info:
+                return jsonify({"ok": False, "error": err or "Asset release GitHub private tidak tersedia."}), 502
+
+            gh_token = _get_spartaflash_github_token()
+            api_headers = {
+                "Authorization": f"Bearer {gh_token}",
+                "Accept": "application/octet-stream",
+                "X-GitHub-Api-Version": "2022-11-28",
+                "User-Agent": "SpartaEnergyPortal/1.0",
+            }
+            init_resp = http_requests.get(
+                asset_info["url"],
+                headers=api_headers,
+                stream=True,
+                allow_redirects=False,
+                timeout=15,
+            )
+            if init_resp.status_code in (301, 302, 303, 307, 308):
+                signed_url = init_resp.headers.get("Location")
+                init_resp.close()
+                if not signed_url:
+                    return jsonify({"ok": False, "error": "URL asset sementara dari GitHub kosong."}), 502
+                upstream = http_requests.get(signed_url, stream=True, timeout=(15, 120))
+            elif init_resp.status_code == 200:
+                upstream = init_resp
+            else:
+                code = init_resp.status_code
+                init_resp.close()
+                return jsonify({"ok": False, "error": f"Gagal mengambil installer dari GitHub API (HTTP {code})."}), 502
+
+            if upstream.status_code != 200:
+                code = upstream.status_code
+                upstream.close()
+                return jsonify({"ok": False, "error": f"Gagal mengunduh stream installer (HTTP {code})."}), 502
+
+            safe_name = asset_info["name"] or cfg["filename"]
+            content_len = upstream.headers.get("Content-Length") or (str(asset_info["size"]) if asset_info.get("size") else "")
+
+            def generate():
+                try:
+                    for chunk in upstream.iter_content(chunk_size=262144):
+                        if chunk:
+                            yield chunk
+                finally:
+                    upstream.close()
+
+            resp_headers = {
+                "Content-Disposition": f'attachment; filename="{safe_name}"',
+                "Cache-Control": "no-store",
+            }
+            if content_len:
+                resp_headers["Content-Length"] = str(content_len)
+            return Response(stream_with_context(generate()), mimetype="application/octet-stream", headers=resp_headers)
 
         return redirect(cfg["github_url"], code=302)
     except Exception as e:
