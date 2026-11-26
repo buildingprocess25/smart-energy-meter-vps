@@ -6396,7 +6396,7 @@ function _sfFormatBytes(bytes) {
 }
 
 async function loadSpartaFlashCenter() {
-    await loadSpartaFlashInfo();
+    await Promise.all([loadSpartaFlashInfo(), loadSpartaFlashDownloads()]);
 }
 
 async function loadSpartaFlashInfo() {
@@ -6460,21 +6460,18 @@ async function loadSpartaFlashDownloads() {
         if ($('sfStatBranches')) $('sfStatBranches').textContent = stats.unique_branches ?? 0;
 
         const rows = res.downloads || [];
+        if ($('sfTotalCountBadge')) {
+            $('sfTotalCountBadge').textContent = stats.total_registrations ?? rows.length;
+        }
         if (!rows.length) {
-            tbody.innerHTML = '<tr><td colspan="10" style="text-align:center; color:var(--text-tertiary); padding:20px;">Belum ada data pengunduh SpartaFlash.</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="8" style="text-align:center; color:var(--text-tertiary); padding:20px;">Belum ada data pengunduh SpartaFlash.</td></tr>';
             return;
         }
 
         tbody.innerHTML = rows.map((r, idx) => {
-            let srcBadge = '<span class="sf-badge sf-badge-local">Lokal</span>';
-            if (r.source_mode === 'github_private') {
-                srcBadge = '<span class="sf-badge sf-badge-local">GitHub Proxy</span>';
-            } else if (r.source_mode === 'github' || r.source_mode === 'github_redirect') {
-                srcBadge = '<span class="sf-badge sf-badge-github">GitHub Direct</span>';
-            }
             const statusText = r.download_hits > 0
-                ? `<span class="sf-badge sf-badge-local">Downloaded (${r.download_hits}x)</span>`
-                : '<span class="sf-badge sf-badge-warn">Registered</span>';
+                ? '<span class="sf-badge sf-badge-local">Terunduh</span>'
+                : '<span class="sf-badge sf-badge-warn">Terdaftar</span>';
             const notesHtml = r.notes ? `<div style="font-size:11px; color:var(--text-tertiary); margin-top:2px;">${_sfEscapeHtml(r.notes)}</div>` : '';
             return `
                 <tr>
@@ -6484,15 +6481,13 @@ async function loadSpartaFlashDownloads() {
                     <td>${_sfEscapeHtml(r.branch_division)}</td>
                     <td>${_sfEscapeHtml(r.role_title || '-')}</td>
                     <td>${_sfEscapeHtml(r.contact)}</td>
-                    <td style="white-space:nowrap;">${_sfEscapeHtml(r.version)} ${srcBadge}</td>
+                    <td style="white-space:nowrap;">${_sfEscapeHtml(r.version)}</td>
                     <td style="white-space:nowrap;">${statusText}</td>
-                    <td style="font-family:var(--font-mono); font-size:11.5px;">${_sfEscapeHtml(r.ip_address || '-')}</td>
-                    <td><button type="button" class="sf-btn-del" onclick="deleteSpartaFlashRecord(${Number(r.id)}, '${_sfEscapeHtml(r.downloader_name).replace(/'/g, '')}')">Hapus</button></td>
                 </tr>
             `;
         }).join('');
     } catch (err) {
-        tbody.innerHTML = `<tr><td colspan="10" style="text-align:center; color:#ef4444; padding:20px;">${_sfEscapeHtml(err.message)}</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="8" style="text-align:center; color:#ef4444; padding:20px;">${_sfEscapeHtml(err.message)}</td></tr>`;
     }
 }
 
