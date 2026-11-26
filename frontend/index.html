@@ -565,204 +565,134 @@
                 </div>
             </div>
             <div id="spartaflashContent" class="tab-content">
-                <div class="summary-topbar" style="margin-bottom: 12px;">
-                    <div class="summary-topbar-left">
-                        <h2>SpartaFlash Installer &amp; Pendataan Pengunduh</h2>
-                        <p>Isi data PIC/Cabang sebelum mengunduh aplikasi SpartaFlash untuk pencatatan distribusi resmi</p>
-                    </div>
-                    <div class="summary-topbar-right" style="flex-wrap: wrap; gap: 8px;">
-                        <span id="sfSourceBadge" class="sf-badge sf-badge-local">Sumber: Memuat…</span>
-                        <button type="button" class="control-btn btn-set" style="padding: 8px 14px; font-size: 11px;" onclick="copySpartaFlashShareLink()" title="Salin link langsung halaman ini">
-                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                                <rect x="9" y="9" width="13" height="13" rx="2"></rect>
-                                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
-                            </svg>
-                            Salin Link Portal
-                        </button>
-                    </div>
-                </div>
-
-                <div class="sf-kpi-grid">
-                    <div class="sf-kpi-card">
-                        <span class="sf-kpi-label">Total Pendaftar</span>
-                        <strong class="sf-kpi-val" id="sfStatTotalReg">0</strong>
-                    </div>
-                    <div class="sf-kpi-card">
-                        <span class="sf-kpi-label">Berhasil Diunduh</span>
-                        <strong class="sf-kpi-val" id="sfStatTotalDl">0</strong>
-                    </div>
-                    <div class="sf-kpi-card">
-                        <span class="sf-kpi-label">Unduhan Hari Ini</span>
-                        <strong class="sf-kpi-val" id="sfStatToday">0</strong>
-                    </div>
-                    <div class="sf-kpi-card">
-                        <span class="sf-kpi-label">Cabang / Divisi Unik</span>
-                        <strong class="sf-kpi-val" id="sfStatBranches">0</strong>
-                    </div>
-                </div>
-
-                <div class="sf-layout-grid">
-                    <div class="control-card">
-                        <div class="control-header">
-                            <div class="control-icon">
-                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
-                                    <polyline points="7 10 12 15 17 10"></polyline>
-                                    <line x1="12" y1="15" x2="12" y2="3"></line>
-                                </svg>
-                            </div>
-                            <div class="control-header-text">
-                                <h4>Form Pendataan &amp; Download</h4>
-                                <p>Lengkapi identitas Anda untuk mendapatkan akses unduhan <strong id="sfMetaTitle">SpartaFlash v2.1.6</strong></p>
-                            </div>
+                <div class="sf-simple-wrap">
+                    <div class="summary-topbar" style="margin-bottom: 16px;">
+                        <div class="summary-topbar-left">
+                            <h2>Download Aplikasi SpartaFlash</h2>
+                            <p>Isi data diri singkat di bawah ini untuk langsung mengunduh installer SpartaFlash untuk Windows</p>
                         </div>
-                        <div class="control-divider"></div>
-                        <form id="sfRegisterForm" class="sf-form" onsubmit="submitSpartaFlashDownload(event)">
-                            <div class="sf-form-row">
-                                <div class="sf-field">
-                                    <label for="sfInputName">Nama Lengkap / PIC <span class="sf-req">*</span></label>
-                                    <input type="text" id="sfInputName" required minlength="2" maxlength="120" placeholder="Contoh: Budi Santoso">
-                                </div>
-                                <div class="sf-field">
-                                    <label for="sfInputBranch">Cabang / Kode Toko / Divisi <span class="sf-req">*</span></label>
-                                    <input type="text" id="sfInputBranch" required minlength="2" maxlength="120" placeholder="Contoh: Branch Cikokol / BMES SAT">
-                                </div>
-                            </div>
-                            <div class="sf-form-row">
-                                <div class="sf-field">
-                                    <label for="sfInputRole">Jabatan / Peran <span class="sf-req">*</span></label>
-                                    <select id="sfInputRole" required>
-                                        <option value="Teknisi Lapangan / Maintenance">Teknisi Lapangan / Maintenance</option>
-                                        <option value="BMES / Engineering">BMES / Engineering</option>
-                                        <option value="PIC Cabang / Area">PIC Cabang / Area</option>
-                                        <option value="IT / Operations">IT / Operations</option>
-                                        <option value="Vendor / Contractor">Vendor / Contractor</option>
-                                        <option value="Lainnya">Lainnya</option>
-                                    </select>
-                                </div>
-                                <div class="sf-field">
-                                    <label for="sfInputContact">No. WhatsApp / Email <span class="sf-req">*</span></label>
-                                    <input type="text" id="sfInputContact" required minlength="5" maxlength="120" placeholder="Contoh: 0812xxxx / nama@sat.co.id">
-                                </div>
-                            </div>
-                            <div class="sf-field">
-                                <label for="sfInputNotes">Keperluan / Keterangan (Opsional)</label>
-                                <input type="text" id="sfInputNotes" maxlength="300" placeholder="Contoh: Setup workstation flashing baru cabang Bekasi">
-                            </div>
-                            <button type="submit" id="sfDownloadBtn" class="control-btn btn-capture" style="margin-top: 6px;">
-                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
-                                    <polyline points="7 10 12 15 17 10"></polyline>
-                                    <line x1="12" y1="15" x2="12" y2="3"></line>
-                                </svg>
-                                <span id="sfDownloadBtnText">Daftar &amp; Download SpartaFlash</span>
-                            </button>
-                        </form>
-                        <div id="sfResultBox" class="sf-result-box" style="display: none;">
-                            <div class="sf-result-title">Data Anda tercatat &amp; unduhan dimulai!</div>
-                            <p class="sf-result-sub">Jika download tidak berjalan otomatis, klik tombol di bawah ini:</p>
-                            <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-top:8px;">
-                                <a id="sfDirectRetryLink" href="#" class="control-btn btn-set" style="text-decoration:none; padding:8px 14px; font-size:11.5px;">Download Ulang Installer</a>
-                                <button type="button" class="control-btn btn-reset" style="width:auto; padding:8px 12px; font-size:11.5px;" onclick="copySpartaFlashSha()">Salin SHA-256</button>
-                            </div>
+                        <div class="summary-topbar-right">
+                            <span id="sfReadyBadge" class="sf-badge sf-badge-local">Versi v2.1.6 • Windows 64-bit</span>
                         </div>
                     </div>
 
-                    <div class="control-card">
-                        <div class="control-header">
-                            <div class="control-icon">
-                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                                    <circle cx="12" cy="12" r="3"></circle>
-                                    <path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3A1.7 1.7 0 0 0 10.1 3V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8v0a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"></path>
-                                </svg>
+                    <div class="sf-layout-grid sf-layout-simple">
+                        <div class="control-card">
+                            <div class="control-header">
+                                <div class="control-icon">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                                        <polyline points="7 10 12 15 17 10"></polyline>
+                                        <line x1="12" y1="15" x2="12" y2="3"></line>
+                                    </svg>
+                                </div>
+                                <div class="control-header-text">
+                                    <h4>1. Data Pengguna &amp; Download</h4>
+                                    <p>Lengkapi data berikut untuk memulai unduhan <strong id="sfMetaTitle">SpartaFlash v2.1.6</strong></p>
+                                </div>
                             </div>
-                            <div class="control-header-text">
-                                <h4>Sumber Distribusi &amp; Info Paket</h4>
-                                <p>Bisa memakai file installer lokal server terlebih dahulu, lalu dialihkan ke GitHub kapan saja</p>
+                            <div class="control-divider"></div>
+                            <form id="sfRegisterForm" class="sf-form" onsubmit="submitSpartaFlashDownload(event)">
+                                <div class="sf-form-row">
+                                    <div class="sf-field">
+                                        <label for="sfInputName">Nama Lengkap <span class="sf-req">*</span></label>
+                                        <input type="text" id="sfInputName" required minlength="2" maxlength="120" placeholder="Contoh: Budi Santoso">
+                                    </div>
+                                    <div class="sf-field">
+                                        <label for="sfInputBranch">Cabang / Kode Toko / Divisi <span class="sf-req">*</span></label>
+                                        <input type="text" id="sfInputBranch" required minlength="2" maxlength="120" placeholder="Contoh: Cabang Cikokol / Toko T105">
+                                    </div>
+                                </div>
+                                <div class="sf-form-row">
+                                    <div class="sf-field">
+                                        <label for="sfInputRole">Jabatan / Peran <span class="sf-req">*</span></label>
+                                        <select id="sfInputRole" required>
+                                            <option value="Teknisi Lapangan / Maintenance">Teknisi Lapangan / Maintenance</option>
+                                            <option value="PIC Cabang / Area">PIC Cabang / Area</option>
+                                            <option value="BMES / Engineering">BMES / Engineering</option>
+                                            <option value="IT / Operations">IT / Operations</option>
+                                            <option value="Vendor / Contractor">Vendor / Contractor</option>
+                                            <option value="Lainnya">Lainnya</option>
+                                        </select>
+                                    </div>
+                                    <div class="sf-field">
+                                        <label for="sfInputContact">No. WhatsApp / Email <span class="sf-req">*</span></label>
+                                        <input type="text" id="sfInputContact" required minlength="5" maxlength="120" placeholder="Contoh: 0812xxxx / nama@sat.co.id">
+                                    </div>
+                                </div>
+                                <div class="sf-field">
+                                    <label for="sfInputNotes">Keperluan (Opsional)</label>
+                                    <input type="text" id="sfInputNotes" maxlength="300" placeholder="Contoh: Instalasi laptop teknisi baru">
+                                </div>
+                                <button type="submit" id="sfDownloadBtn" class="control-btn btn-capture" style="margin-top: 8px; padding: 13px 18px; font-size: 12.5px;">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                                        <polyline points="7 10 12 15 17 10"></polyline>
+                                        <line x1="12" y1="15" x2="12" y2="3"></line>
+                                    </svg>
+                                    <span id="sfDownloadBtnText">Download SpartaFlash v2.1.6</span>
+                                </button>
+                            </form>
+                            <div id="sfResultBox" class="sf-result-box" style="display: none;">
+                                <div class="sf-result-title">Data Anda tercatat &amp; file sedang diunduh!</div>
+                                <p class="sf-result-sub">Tunggu unduhan selesai di browser. Jika tidak mulai otomatis, klik tombol di bawah:</p>
+                                <div style="margin-top: 10px;">
+                                    <a id="sfDirectRetryLink" href="#" class="control-btn btn-set" style="display:inline-flex; text-decoration:none; padding:9px 16px; font-size:12px;">Download Ulang Installer</a>
+                                </div>
                             </div>
                         </div>
-                        <div class="control-divider"></div>
-                        <div class="sf-pkg-meta">
-                            <div><span>Status File Lokal:</span> <strong id="sfLocalStatus">Mengecek…</strong></div>
-                            <div><span>Akses GitHub Private:</span> <strong id="sfTokenStatus">Mengecek…</strong></div>
-                            <div><span>SHA-256:</span> <code id="sfMetaSha" style="font-size:11px; word-break:break-all;">-</code></div>
-                        </div>
-                        <div class="sf-form" style="margin-top: 10px;">
-                            <div class="sf-field">
-                                <label for="sfCfgMode">Mode Sumber Download</label>
-                                <select id="sfCfgMode">
-                                    <option value="auto">Auto (Lokal Server jika ada, else Proxy GitHub Private)</option>
-                                    <option value="github_private">Proxy Stream dari GitHub Private (User tanpa akses GitHub)</option>
-                                    <option value="local">Installer Server Lokal (backend/downloads)</option>
-                                    <option value="github_redirect">Direct Redirect GitHub URL (Hanya Repo Publik)</option>
-                                </select>
-                            </div>
-                            <div class="sf-form-row">
-                                <div class="sf-field">
-                                    <label for="sfCfgGithubRepo">GitHub Repository (owner/repo)</label>
-                                    <input type="text" id="sfCfgGithubRepo" placeholder="buildingprocess25/SpartaFlash">
-                                </div>
-                                <div class="sf-field">
-                                    <label for="sfCfgGithubTag">Release Tag (`latest` / `v2.1.6`)</label>
-                                    <input type="text" id="sfCfgGithubTag" placeholder="latest">
-                                </div>
-                            </div>
-                            <div class="sf-form-row">
-                                <div class="sf-field">
-                                    <label for="sfCfgVersion">Versi Rilis</label>
-                                    <input type="text" id="sfCfgVersion" placeholder="v2.1.6">
-                                </div>
-                                <div class="sf-field">
-                                    <label for="sfCfgFilename">Nama File Installer (.exe)</label>
-                                    <input type="text" id="sfCfgFilename" placeholder="SpartaFlash_Setup_v2.1.6_Windows_x64.exe">
-                                </div>
-                            </div>
-                            <div class="sf-field">
-                                <label for="sfCfgGithubUrl">Fallback Direct URL (khusus mode Direct Redirect)</label>
-                                <input type="url" id="sfCfgGithubUrl" placeholder="https://github.com/buildingprocess25/SpartaFlash/releases/download/...">
-                            </div>
-                            <div class="sf-field">
-                                <label for="sfCfgSha256">Checksum SHA-256</label>
-                                <input type="text" id="sfCfgSha256" placeholder="sha256...">
-                            </div>
-                            <button type="button" class="control-btn btn-set" style="width:100%; margin-top:4px;" onclick="saveSpartaFlashConfig()">Simpan Pengaturan Sumber</button>
-                        </div>
-                    </div>
-                </div>
 
-                <div class="control-card" style="margin-top: 14px;">
-                    <div class="sf-table-header">
-                        <div>
-                            <h4 style="font-size:13px; font-weight:900; text-transform:uppercase; letter-spacing:0.7px; color:var(--text-primary);">Rekap Data Pengunduh SpartaFlash</h4>
-                            <p style="font-size:11.5px; color:var(--text-secondary); margin-top:2px;">Tercatat otomatis setiap user mengisi form dan melakukan download</p>
-                        </div>
-                        <div class="db-toolbar">
-                            <input type="text" id="sfSearchInput" class="sf-search-input" placeholder="Cari nama / cabang / kontak / IP…" oninput="loadSpartaFlashDownloads()">
-                            <button type="button" class="control-btn btn-set" style="padding:8px 14px; font-size:11.5px;" onclick="loadSpartaFlashCenter()">Refresh</button>
-                            <button type="button" class="control-btn btn-reset" style="width:auto; padding:8px 14px; font-size:11.5px;" onclick="exportSpartaFlashCsv()">Export CSV</button>
-                        </div>
-                    </div>
-                    <div class="table-container" style="margin-top: 12px; max-height: 420px;">
-                        <div class="table-scroll">
-                            <table class="data-table sparta-downloads-table">
-                                <thead>
-                                    <tr>
-                                        <th>#</th>
-                                        <th>Waktu Daftar (WIB)</th>
-                                        <th>Nama Pengunduh</th>
-                                        <th>Cabang / Divisi</th>
-                                        <th>Jabatan</th>
-                                        <th>Kontak</th>
-                                        <th>Versi &amp; Sumber</th>
-                                        <th>Status / Hits</th>
-                                        <th>IP</th>
-                                        <th>Aksi</th>
-                                    </tr>
-                                </thead>
-                                <tbody id="sfDownloadsTableBody">
-                                    <tr><td colspan="10" style="text-align:center; color:var(--text-tertiary); padding:20px;">Memuat data pengunduh…</td></tr>
-                                </tbody>
-                            </table>
+                        <div class="control-card">
+                            <div class="control-header">
+                                <div class="control-icon">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                        <circle cx="12" cy="12" r="10"></circle>
+                                        <line x1="12" y1="16" x2="12" y2="12"></line>
+                                        <line x1="12" y1="8" x2="12.01" y2="8"></line>
+                                    </svg>
+                                </div>
+                                <div class="control-header-text">
+                                    <h4>2. Panduan Cepat Instalasi</h4>
+                                    <p>Ikuti 4 langkah mudah berikut setelah mengunduh aplikasi</p>
+                                </div>
+                            </div>
+                            <div class="control-divider"></div>
+                            <ol class="sf-guide-list">
+                                <li>
+                                    <span class="sf-step-num">1</span>
+                                    <div>
+                                        <strong>Isi Data &amp; Klik Download</strong>
+                                        <p>Lengkapi formulir di samping lalu tekan tombol <strong>Download SpartaFlash</strong>.</p>
+                                    </div>
+                                </li>
+                                <li>
+                                    <span class="sf-step-num">2</span>
+                                    <div>
+                                        <strong>Buka File di Folder Downloads</strong>
+                                        <p>Setelah selesai, klik 2x file <code id="sfInstallFilename">SpartaFlash_Setup_v2.1.6_Windows_x64.exe</code>.</p>
+                                    </div>
+                                </li>
+                                <li>
+                                    <span class="sf-step-num">3</span>
+                                    <div>
+                                        <strong>Jika Muncul Peringatan Windows</strong>
+                                        <p>Bila muncul layar biru <em>"Windows protected your PC"</em>, klik <strong>More info</strong> lalu klik <strong>Run anyway</strong>.</p>
+                                    </div>
+                                </li>
+                                <li>
+                                    <span class="sf-step-num">4</span>
+                                    <div>
+                                        <strong>Ikuti Proses Sampai Selesai</strong>
+                                        <p>Klik <strong>Next → Install → Finish</strong>. Aplikasi siap dibuka lewat shortcut Desktop.</p>
+                                    </div>
+                                </li>
+                            </ol>
+                            <div class="sf-pkg-meta sf-sysreq-box" style="margin-top: 14px;">
+                                <div><span>Kompatibilitas:</span> <strong>Windows 10 / Windows 11 (64-bit)</strong></div>
+                                <div><span>Ukuran File:</span> <strong id="sfMetaSizeText">Memuat…</strong></div>
+                                <div><span>Driver USB:</span> <strong>Otomatis terpasang saat instalasi</strong></div>
+                                <div><span>Ketersediaan:</span> <strong id="sfReadyStatusText">Mengecek…</strong></div>
+                            </div>
                         </div>
                     </div>
                 </div>

@@ -6396,7 +6396,7 @@ function _sfFormatBytes(bytes) {
 }
 
 async function loadSpartaFlashCenter() {
-    await Promise.all([loadSpartaFlashInfo(), loadSpartaFlashDownloads()]);
+    await loadSpartaFlashInfo();
 }
 
 async function loadSpartaFlashInfo() {
@@ -6404,66 +6404,42 @@ async function loadSpartaFlashInfo() {
         const res = await safeFetchJson('/api/spartaflash/info');
         if (!res.ok) return;
         const cfg = res.config || {};
-        const stats = res.stats || {};
         _sfCurrentSha256 = cfg.sha256 || '';
 
-        if ($('sfStatTotalReg')) $('sfStatTotalReg').textContent = stats.total_registrations ?? 0;
-        if ($('sfStatTotalDl')) $('sfStatTotalDl').textContent = stats.total_downloads ?? 0;
-        if ($('sfStatToday')) $('sfStatToday').textContent = stats.today_downloads ?? 0;
-        if ($('sfStatBranches')) $('sfStatBranches').textContent = stats.unique_branches ?? 0;
-
-        if ($('sfMetaTitle')) $('sfMetaTitle').textContent = `SpartaFlash ${cfg.version || ''}`.trim();
-        if ($('sfMetaSha')) $('sfMetaSha').textContent = cfg.sha256 || '-';
-
+        const version = cfg.version || 'v2.1.6';
         const activeBytes = cfg.effective_source === 'local' ? cfg.local_size_bytes : (cfg.remote_size_bytes || cfg.local_size_bytes);
-        const sizeText = activeBytes ? ` (${_sfFormatBytes(activeBytes)})` : '';
+        const sizeLabel = _sfFormatBytes(activeBytes);
+        const ready = cfg.effective_source === 'local' || (cfg.effective_source === 'github_private' && cfg.remote_available) || cfg.effective_source === 'github_redirect';
+
+        if ($('sfMetaTitle')) $('sfMetaTitle').textContent = `SpartaFlash ${version}`;
+        if ($('sfInstallFilename')) $('sfInstallFilename').textContent = cfg.filename || 'SpartaFlash_Setup_v2.1.6_Windows_x64.exe';
+        if ($('sfMetaSizeText')) $('sfMetaSizeText').textContent = activeBytes ? sizeLabel : '-';
+
         if ($('sfDownloadBtnText')) {
-            $('sfDownloadBtnText').textContent = `Daftar & Download SpartaFlash ${cfg.version || ''}${sizeText}`;
+            $('sfDownloadBtnText').textContent = activeBytes
+                ? `Download SpartaFlash ${version} (${sizeLabel})`
+                : `Download SpartaFlash ${version}`;
         }
 
-        if ($('sfLocalStatus')) {
-            $('sfLocalStatus').textContent = cfg.local_available
-                ? `Tersedia di Server (${cfg.filename}, ${_sfFormatBytes(cfg.local_size_bytes)})`
-                : `Kosong di backend/downloads/`;
-        }
-        if ($('sfTokenStatus')) {
-            if (cfg.github_token_configured) {
-                $('sfTokenStatus').textContent = cfg.remote_available
-                    ? `Terhubung ke ${cfg.github_repo} (${cfg.version}, ${_sfFormatBytes(cfg.remote_size_bytes)})`
-                    : `Token aktif — ${cfg.remote_error || 'cek repo/tag'}`;
+        const readyBadge = $('sfReadyBadge');
+        if (readyBadge) {
+            readyBadge.className = 'sf-badge';
+            if (ready) {
+                readyBadge.classList.add('sf-badge-local');
+                readyBadge.textContent = activeBytes
+                    ? `Versi ${version} • Windows 64-bit • ${sizeLabel}`
+                    : `Versi ${version} • Windows 64-bit`;
             } else {
-                $('sfTokenStatus').textContent = 'Belum diset (set env SPARTAFLASH_GITHUB_TOKEN di VPS)';
+                readyBadge.classList.add('sf-badge-warn');
+                readyBadge.textContent = `Versi ${version} • Belum Tersedia di Server`;
             }
         }
 
-        const badge = $('sfSourceBadge');
-        if (badge) {
-            badge.className = 'sf-badge';
-            if (cfg.effective_source === 'local') {
-                badge.classList.add('sf-badge-local');
-                badge.textContent = 'Sumber Aktif: Installer Server Lokal';
-            } else if (cfg.effective_source === 'github_private') {
-                badge.classList.add('sf-badge-local');
-                badge.textContent = `Sumber Aktif: Proxy Private GitHub (${cfg.github_repo})`;
-            } else if (cfg.effective_source === 'github_redirect') {
-                badge.classList.add('sf-badge-github');
-                badge.textContent = 'Sumber Aktif: Direct GitHub Redirect';
-            } else if (cfg.effective_source === 'missing_github_token') {
-                badge.classList.add('sf-badge-warn');
-                badge.textContent = 'Token GitHub Private Belum Diset di Server';
-            } else {
-                badge.classList.add('sf-badge-warn');
-                badge.textContent = 'File Installer Lokal Belum Ada';
-            }
+        if ($('sfReadyStatusText')) {
+            $('sfReadyStatusText').textContent = ready
+                ? 'Siap Diunduh (Aman & Terverifikasi)'
+                : 'Installer sedang disiapkan di server';
         }
-
-        if ($('sfCfgMode')) $('sfCfgMode').value = cfg.mode || 'auto';
-        if ($('sfCfgGithubRepo')) $('sfCfgGithubRepo').value = cfg.github_repo || '';
-        if ($('sfCfgGithubTag')) $('sfCfgGithubTag').value = cfg.github_tag || 'latest';
-        if ($('sfCfgVersion')) $('sfCfgVersion').value = cfg.version || '';
-        if ($('sfCfgFilename')) $('sfCfgFilename').value = cfg.filename || '';
-        if ($('sfCfgGithubUrl')) $('sfCfgGithubUrl').value = cfg.github_url || '';
-        if ($('sfCfgSha256')) $('sfCfgSha256').value = cfg.sha256 || '';
     } catch (err) {
         console.error('[SpartaFlash] loadSpartaFlashInfo error:', err);
     }
