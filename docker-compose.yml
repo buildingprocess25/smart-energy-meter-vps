@@ -15,6 +15,13 @@ services:
       - MQTT_USERNAME=${MQTT_USERNAME}
       - MQTT_PASSWORD=${MQTT_PASSWORD}
       - MQTT_USE_TLS=${MQTT_USE_TLS:-false}
+      # SpartaFlash Downloader Config
+      - SPARTAFLASH_DOWNLOAD_MODE=${SPARTAFLASH_DOWNLOAD_MODE:-auto}
+      - SPARTAFLASH_VERSION=${SPARTAFLASH_VERSION:-v2.1.6}
+      - SPARTAFLASH_INSTALLER_FILE=${SPARTAFLASH_INSTALLER_FILE:-SpartaFlash_Setup_v2.1.6_Windows_x64.exe}
+      - SPARTAFLASH_GITHUB_URL=${SPARTAFLASH_GITHUB_URL:-https://github.com/rohidfkra777/SpartaFlash/releases/download/v2.1.6/SpartaFlash_Setup_v2.1.6_Windows_x64.exe}
+    volumes:
+      - ./backend/downloads:/app/backend/downloads
     env_file:
       # Baca dari backend/.env saat development lokal
       - backend/.env

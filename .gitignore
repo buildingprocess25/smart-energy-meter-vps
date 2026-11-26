@@ -40,3 +40,9 @@ walkthrough.md
 exampleCodeEsp32.ino
 AlfaEnergy/
 AlfaEnergy
+
+# Installer binaries (avoid exceeding GitHub 100MB limit)
+backend/downloads/*.exe
+backend/downloads/*.msi
+backend/downloads/*.zip
+backend/downloads/*.sqlite3

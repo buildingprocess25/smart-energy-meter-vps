@@ -1,9 +1,9 @@
 from __future__ import annotations
-import os, re, threading, time, hashlib, hmac, json, logging, contextlib
+import os, re, threading, time, hashlib, hmac, json, logging, contextlib, csv, io, secrets, sqlite3
 from collections import deque
 from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, jsonify, render_template, request, send_file, redirect, Response
 from werkzeug.exceptions import HTTPException
 import paho.mqtt.client as paho_mqtt
 import psycopg2
@@ -494,6 +494,8 @@ def _guard_request():
 
     expected = _portal_token()
     is_write = request.method not in ('GET', 'HEAD', 'OPTIONS')
+    if request.path == '/api/spartaflash/register' and _dashboard_ui_enabled():
+        return None
     if not expected:
         # Writes fail closed. Reads stay open so a missing env does not blind the portal.
         if is_write:
@@ -683,6 +685,34 @@ def init_db():
                             replayed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                         );
                     """)
+                    cur.execute("""
+                        CREATE TABLE IF NOT EXISTS spartaflash_downloads (
+                            id SERIAL PRIMARY KEY,
+                            download_token VARCHAR(64) UNIQUE NOT NULL,
+                            downloader_name VARCHAR(120) NOT NULL,
+                            branch_division VARCHAR(120) NOT NULL,
+                            role_title VARCHAR(80) DEFAULT '',
+                            contact VARCHAR(120) NOT NULL,
+                            notes TEXT DEFAULT '',
+                            version VARCHAR(32) NOT NULL,
+                            filename VARCHAR(255) NOT NULL,
+                            source_mode VARCHAR(32) NOT NULL,
+                            ip_address VARCHAR(64) DEFAULT '',
+                            user_agent TEXT DEFAULT '',
+                            status VARCHAR(32) DEFAULT 'registered',
+                            download_hits INT DEFAULT 0,
+                            registered_at VARCHAR(50) NOT NULL,
+                            last_downloaded_at VARCHAR(50) DEFAULT NULL,
+                            epoch BIGINT NOT NULL
+                        );
+                    """)
+                    cur.execute("""
+                        CREATE TABLE IF NOT EXISTS app_settings (
+                            key VARCHAR(80) PRIMARY KEY,
+                            value JSONB NOT NULL,
+                            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                        );
+                    """)
                     # Alter table add column if not exists
                     columns_to_add = [
                         ('history', 'phase_name', 'VARCHAR(100) DEFAULT NULL'),
@@ -719,6 +749,7 @@ def init_db():
                     create_index_safe('idx_history_dev_sess_epoch', "CREATE INDEX idx_history_dev_sess_epoch ON history(device_id, session_id, epoch);")
                     create_index_safe('idx_buffered_dev_ph_epoch_uniq', "CREATE UNIQUE INDEX idx_buffered_dev_ph_epoch_uniq ON buffered_telemetry(device_id, phase, epoch);")
                     create_index_safe('idx_buffered_dev_epoch', "CREATE INDEX idx_buffered_dev_epoch ON buffered_telemetry(device_id, epoch);")
+                    create_index_safe('idx_spartaflash_dl_epoch', "CREATE INDEX idx_spartaflash_dl_epoch ON spartaflash_downloads(epoch DESC);")
 
                     try:
                         cur.execute("SELECT 1 FROM pg_indexes WHERE indexname = 'idx_telemetry_dev_ph_ts_uniq'")
@@ -1511,6 +1542,7 @@ DEMO_TESTING_STORE = {
 }
 
 @app.route('/')
+@app.route('/spartaflash')
 def index():
     return render_template('index.html', v=_APP_VERSION)
 
@@ -2753,6 +2785,521 @@ def get_capture_log():
         return "No errors logged yet.", 200, {'Content-Type': 'text/plain'}
     except Exception as e:
         return str(e), 500, {'Content-Type': 'text/plain'}
+
+# ── SpartaFlash Installer Download & Telemetry Tracker ───────────────────────
+_SPARTAFLASH_DOWNLOADS_DIR = os.environ.get(
+    "SPARTAFLASH_INSTALLER_DIR",
+    os.path.join(os.path.dirname(__file__), "downloads"),
+)
+_SPARTAFLASH_SQLITE_FALLBACK = os.path.join(_SPARTAFLASH_DOWNLOADS_DIR, "spartaflash_fallback.sqlite3")
+_spartaflash_sqlite_lock = threading.Lock()
+
+
+def _ensure_spartaflash_sqlite() -> sqlite3.Connection:
+    os.makedirs(_SPARTAFLASH_DOWNLOADS_DIR, exist_ok=True)
+    conn = sqlite3.connect(_SPARTAFLASH_SQLITE_FALLBACK, timeout=10)
+    conn.row_factory = sqlite3.Row
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS spartaflash_downloads (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            download_token TEXT UNIQUE NOT NULL,
+            downloader_name TEXT NOT NULL,
+            branch_division TEXT NOT NULL,
+            role_title TEXT DEFAULT '',
+            contact TEXT NOT NULL,
+            notes TEXT DEFAULT '',
+            version TEXT NOT NULL,
+            filename TEXT NOT NULL,
+            source_mode TEXT NOT NULL,
+            ip_address TEXT DEFAULT '',
+            user_agent TEXT DEFAULT '',
+            status TEXT DEFAULT 'registered',
+            download_hits INTEGER DEFAULT 0,
+            registered_at TEXT NOT NULL,
+            last_downloaded_at TEXT DEFAULT NULL,
+            epoch INTEGER NOT NULL
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS app_settings (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    conn.commit()
+    return conn
+
+
+def _has_pg_pool() -> bool:
+    global db_pool
+    if db_pool is not None:
+        return True
+    db_url = os.environ.get("DATABASE_URL") or ""
+    if not (db_url.startswith("postgres://") or db_url.startswith("postgresql://")):
+        return False
+    init_db()
+    return db_pool is not None
+
+
+def _get_client_ip() -> str:
+    xff = (request.headers.get("X-Forwarded-For") or "").strip()
+    if xff:
+        return xff.split(",")[0].strip()[:64]
+    xri = (request.headers.get("X-Real-IP") or "").strip()
+    if xri:
+        return xri[:64]
+    return (request.remote_addr or "")[:64]
+
+
+def _default_spartaflash_config() -> dict:
+    return {
+        "mode": (os.environ.get("SPARTAFLASH_DOWNLOAD_MODE") or "auto").strip().lower(),
+        "version": (os.environ.get("SPARTAFLASH_VERSION") or "v2.1.6").strip(),
+        "filename": os.path.basename((os.environ.get("SPARTAFLASH_INSTALLER_FILE") or "SpartaFlash_Setup_v2.1.6_Windows_x64.exe").strip()),
+        "github_url": (os.environ.get("SPARTAFLASH_GITHUB_URL") or "https://github.com/rohidfkra777/SpartaFlash/releases/download/v2.1.6/SpartaFlash_Setup_v2.1.6_Windows_x64.exe").strip(),
+        "sha256": (os.environ.get("SPARTAFLASH_SHA256") or "8563333199744e1fe2bf0b8ecc892e700564868d0a01475c539b35dd2cd9fbdc").strip(),
+    }
+
+
+def _get_spartaflash_config() -> dict:
+    cfg = _default_spartaflash_config()
+    saved = None
+    try:
+        if _has_pg_pool():
+            with get_db_cursor() as cur:
+                cur.execute("SELECT value FROM app_settings WHERE key = %s", ("spartaflash_config",))
+                row = cur.fetchone()
+                if row and row[0]:
+                    saved = row[0] if isinstance(row[0], dict) else json.loads(row[0])
+        else:
+            with _spartaflash_sqlite_lock:
+                conn = _ensure_spartaflash_sqlite()
+                try:
+                    row = conn.execute("SELECT value FROM app_settings WHERE key = ?", ("spartaflash_config",)).fetchone()
+                    if row and row["value"]:
+                        saved = json.loads(row["value"])
+                finally:
+                    conn.close()
+    except Exception as e:
+        print(f"[SpartaFlash] Failed reading config: {e}")
+
+    if isinstance(saved, dict):
+        for k in ("mode", "version", "filename", "github_url", "sha256"):
+            val = str(saved.get(k) or "").strip()
+            if val:
+                cfg[k] = os.path.basename(val) if k == "filename" else val
+
+    if cfg["mode"] not in ("auto", "local", "github"):
+        cfg["mode"] = "auto"
+
+    safe_filename = os.path.basename(cfg["filename"]) or "SpartaFlash_Setup_v2.1.6_Windows_x64.exe"
+    cfg["filename"] = safe_filename
+    local_path = os.path.join(_SPARTAFLASH_DOWNLOADS_DIR, safe_filename)
+    local_available = os.path.isfile(local_path)
+    local_size_bytes = os.path.getsize(local_path) if local_available else 0
+
+    if cfg["mode"] == "github":
+        effective_source = "github"
+    elif cfg["mode"] == "local":
+        effective_source = "local" if local_available else "missing_local"
+    else:
+        effective_source = "local" if local_available else "github"
+
+    cfg["local_path"] = local_path
+    cfg["local_available"] = local_available
+    cfg["local_size_bytes"] = local_size_bytes
+    cfg["effective_source"] = effective_source
+    return cfg
+
+
+def _save_spartaflash_config(new_cfg: dict) -> dict:
+    payload = {
+        "mode": new_cfg["mode"],
+        "version": new_cfg["version"],
+        "filename": os.path.basename(new_cfg["filename"]),
+        "github_url": new_cfg["github_url"],
+        "sha256": new_cfg["sha256"],
+    }
+    raw_json = json.dumps(payload)
+    if _has_pg_pool():
+        with get_db_cursor() as cur:
+            cur.execute("""
+                INSERT INTO app_settings (key, value, updated_at)
+                VALUES (%s, %s::jsonb, CURRENT_TIMESTAMP)
+                ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP
+            """, ("spartaflash_config", raw_json))
+    else:
+        with _spartaflash_sqlite_lock:
+            conn = _ensure_spartaflash_sqlite()
+            try:
+                conn.execute("""
+                    INSERT INTO app_settings (key, value, updated_at)
+                    VALUES (?, ?, CURRENT_TIMESTAMP)
+                    ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP
+                """, ("spartaflash_config", raw_json))
+                conn.commit()
+            finally:
+                conn.close()
+    return _get_spartaflash_config()
+
+
+def _query_spartaflash_downloads(q: str = "", limit: int = 200) -> tuple[list[dict], dict]:
+    q_norm = (q or "").strip().lower()
+    limit_val = max(1, min(int(limit or 200), 1000))
+    rows_out = []
+    stats = {"total_registrations": 0, "total_downloads": 0, "today_downloads": 0, "unique_branches": 0}
+    today_suffix = datetime.now(_WIB).strftime("%d/%m/%Y")
+
+    cols = (
+        "id, download_token, downloader_name, branch_division, role_title, contact, "
+        "notes, version, filename, source_mode, ip_address, user_agent, status, "
+        "download_hits, registered_at, last_downloaded_at, epoch"
+    )
+
+    if _has_pg_pool():
+        with get_db_cursor() as cur:
+            cur.execute(f"SELECT {cols} FROM spartaflash_downloads ORDER BY epoch DESC, id DESC LIMIT %s", (limit_val,))
+            raw_rows = cur.fetchall()
+            cur.execute("""
+                SELECT
+                    COUNT(*) AS total_reg,
+                    COALESCE(SUM(CASE WHEN download_hits > 0 THEN 1 ELSE 0 END), 0) AS total_dl,
+                    COUNT(DISTINCT LOWER(TRIM(branch_division))) AS uniq_branches
+                FROM spartaflash_downloads
+            """)
+            agg = cur.fetchone()
+            cur.execute("SELECT COUNT(*) FROM spartaflash_downloads WHERE RIGHT(registered_at, 10) = %s", (today_suffix,))
+            today_row = cur.fetchone()
+        if agg:
+            stats["total_registrations"] = int(agg[0] or 0)
+            stats["total_downloads"] = int(agg[1] or 0)
+            stats["unique_branches"] = int(agg[2] or 0)
+        stats["today_downloads"] = int(today_row[0] or 0) if today_row else 0
+    else:
+        with _spartaflash_sqlite_lock:
+            conn = _ensure_spartaflash_sqlite()
+            try:
+                raw_rows = conn.execute(
+                    f"SELECT {cols} FROM spartaflash_downloads ORDER BY epoch DESC, id DESC LIMIT ?",
+                    (limit_val,),
+                ).fetchall()
+                agg = conn.execute("""
+                    SELECT
+                        COUNT(*) AS total_reg,
+                        COALESCE(SUM(CASE WHEN download_hits > 0 THEN 1 ELSE 0 END), 0) AS total_dl,
+                        COUNT(DISTINCT LOWER(TRIM(branch_division))) AS uniq_branches
+                    FROM spartaflash_downloads
+                """).fetchone()
+                today_row = conn.execute(
+                    "SELECT COUNT(*) FROM spartaflash_downloads WHERE substr(registered_at, -10) = ?",
+                    (today_suffix,),
+                ).fetchone()
+            finally:
+                conn.close()
+        if agg:
+            stats["total_registrations"] = int(agg[0] or 0)
+            stats["total_downloads"] = int(agg[1] or 0)
+            stats["unique_branches"] = int(agg[2] or 0)
+        stats["today_downloads"] = int(today_row[0] or 0) if today_row else 0
+
+    for r in raw_rows:
+        item = {
+            "id": r[0],
+            "downloader_name": r[2],
+            "branch_division": r[3],
+            "role_title": r[4] or "",
+            "contact": r[5],
+            "notes": r[6] or "",
+            "version": r[7],
+            "filename": r[8],
+            "source_mode": r[9],
+            "ip_address": r[10] or "",
+            "user_agent": r[11] or "",
+            "status": r[12] or "registered",
+            "download_hits": int(r[13] or 0),
+            "registered_at": r[14],
+            "last_downloaded_at": r[15] or "",
+            "epoch": int(r[16] or 0),
+        }
+        if q_norm:
+            haystack = " ".join([
+                item["downloader_name"], item["branch_division"], item["role_title"],
+                item["contact"], item["notes"], item["ip_address"], item["version"],
+            ]).lower()
+            if q_norm not in haystack:
+                continue
+        rows_out.append(item)
+    return rows_out, stats
+
+
+@app.route('/api/spartaflash/info', methods=['GET'])
+def spartaflash_info():
+    try:
+        cfg = _get_spartaflash_config()
+        _, stats = _query_spartaflash_downloads(limit=1)
+        public_cfg = {k: v for k, v in cfg.items() if k != "local_path"}
+        return jsonify({"ok": True, "config": public_cfg, "stats": stats})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route('/api/spartaflash/config', methods=['POST'])
+def spartaflash_update_config():
+    try:
+        body = request.get_json(silent=True) or {}
+        cur_cfg = _get_spartaflash_config()
+        mode = (body.get("mode") or cur_cfg["mode"]).strip().lower()
+        version = (body.get("version") or cur_cfg["version"]).strip()
+        filename = os.path.basename((body.get("filename") or cur_cfg["filename"]).strip())
+        github_url = (body.get("github_url") or cur_cfg["github_url"]).strip()
+        sha256 = (body.get("sha256") or cur_cfg["sha256"]).strip()
+
+        if mode not in ("auto", "local", "github"):
+            return jsonify({"ok": False, "error": "Mode harus 'auto', 'local', atau 'github'."}), 400
+        if github_url and not (github_url.startswith("https://") or github_url.startswith("http://")):
+            return jsonify({"ok": False, "error": "GitHub URL harus diawali https:// atau http://."}), 400
+        if not version or not filename:
+            return jsonify({"ok": False, "error": "Version dan filename wajib diisi."}), 400
+
+        updated = _save_spartaflash_config({
+            "mode": mode, "version": version, "filename": filename,
+            "github_url": github_url, "sha256": sha256,
+        })
+        public_cfg = {k: v for k, v in updated.items() if k != "local_path"}
+        return jsonify({"ok": True, "config": public_cfg})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route('/api/spartaflash/register', methods=['POST'])
+def spartaflash_register_download():
+    try:
+        body = request.get_json(silent=True) or {}
+        name = (body.get("downloader_name") or "").strip()
+        branch = (body.get("branch_division") or "").strip()
+        role_title = (body.get("role_title") or "").strip()
+        contact = (body.get("contact") or "").strip()
+        notes = (body.get("notes") or "").strip()
+
+        if len(name) < 2:
+            return jsonify({"ok": False, "error": "Nama lengkap / PIC wajib diisi (minimal 2 karakter)."}), 400
+        if len(branch) < 2:
+            return jsonify({"ok": False, "error": "Cabang / Toko / Divisi wajib diisi."}), 400
+        if len(contact) < 5:
+            return jsonify({"ok": False, "error": "No. WhatsApp atau Email wajib diisi (minimal 5 karakter)."}), 400
+
+        cfg = _get_spartaflash_config()
+        if cfg["effective_source"] == "missing_local":
+            return jsonify({
+                "ok": False,
+                "error": f"File installer '{cfg['filename']}' belum tersedia di server (backend/downloads/). Upload file atau ubah sumber ke GitHub Release.",
+            }), 404
+
+        token = secrets.token_urlsafe(24)
+        now_dt = datetime.now(_WIB)
+        now_ts = now_dt.strftime("%H:%M:%S %d/%m/%Y")
+        now_epoch = int(now_dt.timestamp() * 1000)
+        ip_addr = _get_client_ip()
+        user_agent = (request.headers.get("User-Agent") or "")[:300]
+
+        if _has_pg_pool():
+            with get_db_cursor() as cur:
+                cur.execute("""
+                    INSERT INTO spartaflash_downloads (
+                        download_token, downloader_name, branch_division, role_title, contact,
+                        notes, version, filename, source_mode, ip_address, user_agent,
+                        status, download_hits, registered_at, epoch
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'registered', 0, %s, %s)
+                    RETURNING id
+                """, (
+                    token, name[:120], branch[:120], role_title[:80], contact[:120],
+                    notes[:500], cfg["version"][:32], cfg["filename"][:255],
+                    cfg["effective_source"][:32], ip_addr, user_agent, now_ts, now_epoch,
+                ))
+                rec_id = cur.fetchone()[0]
+        else:
+            with _spartaflash_sqlite_lock:
+                conn = _ensure_spartaflash_sqlite()
+                try:
+                    cur = conn.execute("""
+                        INSERT INTO spartaflash_downloads (
+                            download_token, downloader_name, branch_division, role_title, contact,
+                            notes, version, filename, source_mode, ip_address, user_agent,
+                            status, download_hits, registered_at, epoch
+                        )
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'registered', 0, ?, ?)
+                    """, (
+                        token, name[:120], branch[:120], role_title[:80], contact[:120],
+                        notes[:500], cfg["version"][:32], cfg["filename"][:255],
+                        cfg["effective_source"][:32], ip_addr, user_agent, now_ts, now_epoch,
+                    ))
+                    rec_id = cur.lastrowid
+                    conn.commit()
+                finally:
+                    conn.close()
+
+        return jsonify({
+            "ok": True,
+            "id": rec_id,
+            "token": token,
+            "download_url": f"/api/spartaflash/download/{token}",
+            "version": cfg["version"],
+            "filename": cfg["filename"],
+            "sha256": cfg["sha256"],
+            "source_mode": cfg["effective_source"],
+            "registered_at": now_ts,
+        })
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route('/api/spartaflash/download/<token>', methods=['GET'])
+def spartaflash_execute_download(token: str):
+    try:
+        clean_token = (token or "").strip()
+        if not clean_token:
+            return jsonify({"ok": False, "error": "Token unduhan tidak valid."}), 400
+
+        now_dt = datetime.now(_WIB)
+        now_ts = now_dt.strftime("%H:%M:%S %d/%m/%Y")
+        now_epoch = int(now_dt.timestamp() * 1000)
+
+        rec_epoch = None
+        if _has_pg_pool():
+            with get_db_cursor() as cur:
+                cur.execute("SELECT id, epoch FROM spartaflash_downloads WHERE download_token = %s", (clean_token,))
+                row = cur.fetchone()
+                if not row:
+                    return jsonify({"ok": False, "error": "Token unduhan tidak ditemukan. Silakan isi form pendataan terlebih dahulu."}), 404
+                rec_epoch = int(row[1] or 0)
+        else:
+            with _spartaflash_sqlite_lock:
+                conn = _ensure_spartaflash_sqlite()
+                try:
+                    row = conn.execute("SELECT id, epoch FROM spartaflash_downloads WHERE download_token = ?", (clean_token,)).fetchone()
+                    if not row:
+                        return jsonify({"ok": False, "error": "Token unduhan tidak ditemukan. Silakan isi form pendataan terlebih dahulu."}), 404
+                    rec_epoch = int(row["epoch"] or 0)
+                finally:
+                    conn.close()
+
+        # Token berlaku 24 jam agar user bisa retry download jika koneksi sempat terputus
+        if rec_epoch and (now_epoch - rec_epoch) > (24 * 3600 * 1000):
+            return jsonify({"ok": False, "error": "Link unduhan sudah kedaluwarsa (>24 jam). Silakan isi ulang form pendataan."}), 410
+
+        cfg = _get_spartaflash_config()
+        if cfg["effective_source"] == "missing_local":
+            return jsonify({
+                "ok": False,
+                "error": f"File installer '{cfg['filename']}' belum tersedia di server.",
+            }), 404
+
+        effective_source = cfg["effective_source"]
+        if _has_pg_pool():
+            with get_db_cursor() as cur:
+                cur.execute("""
+                    UPDATE spartaflash_downloads
+                    SET status = 'downloaded',
+                        download_hits = download_hits + 1,
+                        last_downloaded_at = %s,
+                        source_mode = %s
+                    WHERE download_token = %s
+                """, (now_ts, effective_source, clean_token))
+        else:
+            with _spartaflash_sqlite_lock:
+                conn = _ensure_spartaflash_sqlite()
+                try:
+                    conn.execute("""
+                        UPDATE spartaflash_downloads
+                        SET status = 'downloaded',
+                            download_hits = download_hits + 1,
+                            last_downloaded_at = ?,
+                            source_mode = ?
+                        WHERE download_token = ?
+                    """, (now_ts, effective_source, clean_token))
+                    conn.commit()
+                finally:
+                    conn.close()
+
+        if effective_source == "local" and cfg["local_available"]:
+            return send_file(
+                cfg["local_path"],
+                as_attachment=True,
+                download_name=cfg["filename"],
+                conditional=True,
+            )
+
+        return redirect(cfg["github_url"], code=302)
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route('/api/spartaflash/downloads', methods=['GET'])
+def spartaflash_list_downloads():
+    try:
+        q = request.args.get("q", "")
+        limit = request.args.get("limit", "200")
+        rows, stats = _query_spartaflash_downloads(q=q, limit=int(limit))
+        return jsonify({"ok": True, "downloads": rows, "stats": stats})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route('/api/spartaflash/downloads/export', methods=['GET'])
+def spartaflash_export_downloads_csv():
+    try:
+        q = request.args.get("q", "")
+        rows, _ = _query_spartaflash_downloads(q=q, limit=1000)
+        buf = io.StringIO()
+        writer = csv.writer(buf)
+        writer.writerow([
+            "ID", "Waktu Daftar (WIB)", "Terakhir Unduh (WIB)", "Nama Pengunduh",
+            "Cabang / Divisi", "Jabatan / Peran", "Kontak", "Keperluan / Catatan",
+            "Versi", "Nama File", "Sumber", "Status", "Jumlah Hits", "IP Address",
+        ])
+        for item in rows:
+            writer.writerow([
+                item["id"], item["registered_at"], item["last_downloaded_at"],
+                item["downloader_name"], item["branch_division"], item["role_title"],
+                item["contact"], item["notes"], item["version"], item["filename"],
+                item["source_mode"], item["status"], item["download_hits"], item["ip_address"],
+            ])
+        csv_bytes = ("\ufeff" + buf.getvalue()).encode("utf-8")
+        fname = f"spartaflash_downloads_{datetime.now(_WIB).strftime('%Y%m%d_%H%M%S')}.csv"
+        return Response(
+            csv_bytes,
+            mimetype="text/csv; charset=utf-8",
+            headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+        )
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route('/api/spartaflash/downloads/<int:record_id>', methods=['DELETE'])
+def spartaflash_delete_download(record_id: int):
+    try:
+        deleted = 0
+        if _has_pg_pool():
+            with get_db_cursor() as cur:
+                cur.execute("DELETE FROM spartaflash_downloads WHERE id = %s", (record_id,))
+                deleted = cur.rowcount
+        else:
+            with _spartaflash_sqlite_lock:
+                conn = _ensure_spartaflash_sqlite()
+                try:
+                    cur = conn.execute("DELETE FROM spartaflash_downloads WHERE id = ?", (record_id,))
+                    deleted = cur.rowcount
+                    conn.commit()
+                finally:
+                    conn.close()
+        if not deleted:
+            return jsonify({"ok": False, "error": "Data pengunduh tidak ditemukan."}), 404
+        return jsonify({"ok": True})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
 
 # Last in the module: resuming a recording needs every function above to exist.
 if not app.debug or os.environ.get("WERKZEUG_RUN_MAIN") == "true":

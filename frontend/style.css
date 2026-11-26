@@ -2254,3 +2254,191 @@ mark.search-highlight { background: rgba(187,23,36,0.12); color: var(--brand); b
 .db-device-select:focus {
     border-color: var(--brand);
 }
+
+/* ── SpartaFlash Downloader & Tracker ────────────────────────────────────── */
+#spartaflashContent.active {
+    display: block !important;
+    overflow-y: auto;
+    flex: 1;
+    min-height: 0;
+    padding-right: 4px;
+}
+.sf-kpi-grid {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 12px;
+    margin-bottom: 14px;
+}
+.sf-kpi-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: .65rem 0 .65rem 0;
+    padding: 12px 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    box-shadow: var(--shadow-card);
+}
+.sf-kpi-label {
+    font-size: 10.5px;
+    font-weight: 800;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    color: var(--text-tertiary);
+}
+.sf-kpi-val {
+    font-size: 20px;
+    font-weight: 900;
+    color: var(--text-primary);
+    font-family: var(--font-mono);
+}
+.sf-layout-grid {
+    display: grid;
+    grid-template-columns: 1.15fr 1fr;
+    gap: 14px;
+    align-items: start;
+}
+.sf-form {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+.sf-form-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+}
+.sf-field {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+.sf-field label {
+    font-size: 11px;
+    font-weight: 800;
+    color: var(--text-secondary);
+}
+.sf-req {
+    color: #ef4444;
+}
+.sf-field input,
+.sf-field select,
+.sf-search-input {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 9px 11px;
+    border: 1.5px solid var(--border);
+    border-radius: .375rem 0 .375rem 0;
+    background: var(--surface-2);
+    color: var(--text-primary);
+    font-family: var(--font-ui);
+    font-size: 12.5px;
+    font-weight: 600;
+    outline: none;
+    transition: border-color 0.15s ease;
+}
+.sf-search-input {
+    width: 240px;
+    padding: 8px 11px;
+}
+.sf-field input:focus,
+.sf-field select:focus,
+.sf-search-input:focus {
+    border-color: var(--brand);
+}
+.sf-pkg-meta {
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 10px 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    font-size: 12px;
+    color: var(--text-secondary);
+}
+.sf-result-box {
+    margin-top: 12px;
+    padding: 12px 14px;
+    border-radius: 6px;
+    background: rgba(16, 185, 129, 0.12);
+    border: 1px solid rgba(16, 185, 129, 0.35);
+}
+.sf-result-title {
+    font-size: 13px;
+    font-weight: 800;
+    color: #059669;
+}
+.dark .sf-result-title {
+    color: #34d399;
+}
+.sf-result-sub {
+    font-size: 11.5px;
+    color: var(--text-secondary);
+    margin-top: 3px;
+}
+.sf-badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 4px 10px;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 800;
+}
+.sf-badge-local {
+    background: rgba(16, 185, 129, 0.15);
+    color: #059669;
+    border: 1px solid rgba(16, 185, 129, 0.3);
+}
+.dark .sf-badge-local {
+    color: #34d399;
+}
+.sf-badge-github {
+    background: rgba(56, 189, 248, 0.15);
+    color: #0284c7;
+    border: 1px solid rgba(56, 189, 248, 0.35);
+}
+.dark .sf-badge-github {
+    color: #38bdf8;
+}
+.sf-badge-warn {
+    background: rgba(239, 68, 68, 0.15);
+    color: #dc2626;
+    border: 1px solid rgba(239, 68, 68, 0.35);
+}
+.sf-table-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+}
+.sparta-downloads-table th:nth-child(5) {
+    text-align: left !important;
+}
+.sf-btn-del {
+    padding: 4px 9px;
+    font-size: 11px;
+    font-weight: 700;
+    border-radius: 4px;
+    border: 1px solid rgba(239, 68, 68, 0.4);
+    background: rgba(239, 68, 68, 0.1);
+    color: #ef4444;
+    cursor: pointer;
+}
+.sf-btn-del:hover {
+    background: #dc2626;
+    color: #fff;
+}
+@media (max-width: 960px) {
+    .sf-kpi-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+    .sf-layout-grid,
+    .sf-form-row {
+        grid-template-columns: 1fr;
+    }
+    .sf-search-input {
+        width: 100%;
+    }
+}

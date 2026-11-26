@@ -2593,6 +2593,9 @@ function switchTab(tabName) {
     if (tabName === 'tools' && typeof activeOfflineChart !== 'undefined' && activeOfflineChart) {
         setTimeout(() => activeOfflineChart.resize(), 50);
     }
+    if (tabName === 'spartaflash') {
+        loadSpartaFlashCenter();
+    }
 }
 async function loadDevices() {
     try {
@@ -6367,7 +6370,238 @@ document.addEventListener('DOMContentLoaded', async () => {
             closeRecordingPopover();
         }
     });
+    const urlParams = new URLSearchParams(window.location.search);
+    if (window.location.pathname === '/spartaflash' || urlParams.get('tab') === 'spartaflash' || window.location.hash === '#spartaflash') {
+        switchTab('spartaflash');
+    }
 });
+
+// ── SpartaFlash Download Tracker Module ─────────────────────────────────────
+let _sfCurrentSha256 = '';
+
+function _sfEscapeHtml(str) {
+    return String(str ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
+function _sfFormatBytes(bytes) {
+    const n = Number(bytes || 0);
+    if (!n) return '-';
+    if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+    return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+async function loadSpartaFlashCenter() {
+    await Promise.all([loadSpartaFlashInfo(), loadSpartaFlashDownloads()]);
+}
+
+async function loadSpartaFlashInfo() {
+    try {
+        const res = await safeFetchJson('/api/spartaflash/info');
+        if (!res.ok) return;
+        const cfg = res.config || {};
+        const stats = res.stats || {};
+        _sfCurrentSha256 = cfg.sha256 || '';
+
+        if ($('sfStatTotalReg')) $('sfStatTotalReg').textContent = stats.total_registrations ?? 0;
+        if ($('sfStatTotalDl')) $('sfStatTotalDl').textContent = stats.total_downloads ?? 0;
+        if ($('sfStatToday')) $('sfStatToday').textContent = stats.today_downloads ?? 0;
+        if ($('sfStatBranches')) $('sfStatBranches').textContent = stats.unique_branches ?? 0;
+
+        if ($('sfMetaTitle')) $('sfMetaTitle').textContent = `SpartaFlash ${cfg.version || ''}`.trim();
+        if ($('sfMetaSha')) $('sfMetaSha').textContent = cfg.sha256 || '-';
+
+        const sizeText = cfg.local_available ? ` (${_sfFormatBytes(cfg.local_size_bytes)})` : '';
+        if ($('sfDownloadBtnText')) {
+            $('sfDownloadBtnText').textContent = `Daftar & Download SpartaFlash ${cfg.version || ''}${sizeText}`;
+        }
+
+        if ($('sfLocalStatus')) {
+            $('sfLocalStatus').textContent = cfg.local_available
+                ? `Tersedia di Server (${cfg.filename}, ${_sfFormatBytes(cfg.local_size_bytes)})`
+                : `Belum ada di backend/downloads/ (${cfg.filename})`;
+        }
+
+        const badge = $('sfSourceBadge');
+        if (badge) {
+            badge.className = 'sf-badge';
+            if (cfg.effective_source === 'local') {
+                badge.classList.add('sf-badge-local');
+                badge.textContent = 'Sumber Aktif: Installer Server Lokal';
+            } else if (cfg.effective_source === 'github') {
+                badge.classList.add('sf-badge-github');
+                badge.textContent = 'Sumber Aktif: Direct GitHub Release';
+            } else {
+                badge.classList.add('sf-badge-warn');
+                badge.textContent = 'File Installer Lokal Belum Ada';
+            }
+        }
+
+        if ($('sfCfgMode')) $('sfCfgMode').value = cfg.mode || 'auto';
+        if ($('sfCfgVersion')) $('sfCfgVersion').value = cfg.version || '';
+        if ($('sfCfgFilename')) $('sfCfgFilename').value = cfg.filename || '';
+        if ($('sfCfgGithubUrl')) $('sfCfgGithubUrl').value = cfg.github_url || '';
+        if ($('sfCfgSha256')) $('sfCfgSha256').value = cfg.sha256 || '';
+    } catch (err) {
+        console.error('[SpartaFlash] loadSpartaFlashInfo error:', err);
+    }
+}
+
+async function loadSpartaFlashDownloads() {
+    const tbody = $('sfDownloadsTableBody');
+    if (!tbody) return;
+    try {
+        const q = encodeURIComponent(($('sfSearchInput')?.value || '').trim());
+        const res = await safeFetchJson(`/api/spartaflash/downloads?q=${q}&limit=200`);
+        if (!res.ok) throw new Error(res.error || 'Gagal memuat log unduhan');
+
+        const stats = res.stats || {};
+        if ($('sfStatTotalReg')) $('sfStatTotalReg').textContent = stats.total_registrations ?? 0;
+        if ($('sfStatTotalDl')) $('sfStatTotalDl').textContent = stats.total_downloads ?? 0;
+        if ($('sfStatToday')) $('sfStatToday').textContent = stats.today_downloads ?? 0;
+        if ($('sfStatBranches')) $('sfStatBranches').textContent = stats.unique_branches ?? 0;
+
+        const rows = res.downloads || [];
+        if (!rows.length) {
+            tbody.innerHTML = '<tr><td colspan="10" style="text-align:center; color:var(--text-tertiary); padding:20px;">Belum ada data pengunduh SpartaFlash.</td></tr>';
+            return;
+        }
+
+        tbody.innerHTML = rows.map((r, idx) => {
+            const srcBadge = r.source_mode === 'github'
+                ? '<span class="sf-badge sf-badge-github">GitHub</span>'
+                : '<span class="sf-badge sf-badge-local">Lokal</span>';
+            const statusText = r.download_hits > 0
+                ? `<span class="sf-badge sf-badge-local">Downloaded (${r.download_hits}x)</span>`
+                : '<span class="sf-badge sf-badge-warn">Registered</span>';
+            const notesHtml = r.notes ? `<div style="font-size:11px; color:var(--text-tertiary); margin-top:2px;">${_sfEscapeHtml(r.notes)}</div>` : '';
+            return `
+                <tr>
+                    <td>${idx + 1}</td>
+                    <td style="font-family:var(--font-mono); font-size:11.5px; white-space:nowrap;">${_sfEscapeHtml(r.registered_at)}</td>
+                    <td><strong>${_sfEscapeHtml(r.downloader_name)}</strong>${notesHtml}</td>
+                    <td>${_sfEscapeHtml(r.branch_division)}</td>
+                    <td>${_sfEscapeHtml(r.role_title || '-')}</td>
+                    <td>${_sfEscapeHtml(r.contact)}</td>
+                    <td style="white-space:nowrap;">${_sfEscapeHtml(r.version)} ${srcBadge}</td>
+                    <td style="white-space:nowrap;">${statusText}</td>
+                    <td style="font-family:var(--font-mono); font-size:11.5px;">${_sfEscapeHtml(r.ip_address || '-')}</td>
+                    <td><button type="button" class="sf-btn-del" onclick="deleteSpartaFlashRecord(${Number(r.id)}, '${_sfEscapeHtml(r.downloader_name).replace(/'/g, '')}')">Hapus</button></td>
+                </tr>
+            `;
+        }).join('');
+    } catch (err) {
+        tbody.innerHTML = `<tr><td colspan="10" style="text-align:center; color:#ef4444; padding:20px;">${_sfEscapeHtml(err.message)}</td></tr>`;
+    }
+}
+
+async function submitSpartaFlashDownload(event) {
+    event.preventDefault();
+    const btn = $('sfDownloadBtn');
+    const payload = {
+        downloader_name: ($('sfInputName')?.value || '').trim(),
+        branch_division: ($('sfInputBranch')?.value || '').trim(),
+        role_title: ($('sfInputRole')?.value || '').trim(),
+        contact: ($('sfInputContact')?.value || '').trim(),
+        notes: ($('sfInputNotes')?.value || '').trim(),
+    };
+
+    if (btn) btn.disabled = true;
+    try {
+        const res = await safeFetchJson('/api/spartaflash/register', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+        });
+        if (!res.ok) {
+            showModal('Gagal Memproses Unduhan', res.error || 'Terjadi kesalahan saat mendaftarkan data.', 'error');
+            return;
+        }
+
+        _sfCurrentSha256 = res.sha256 || _sfCurrentSha256;
+        const retryLink = $('sfDirectRetryLink');
+        if (retryLink) retryLink.href = res.download_url;
+        if ($('sfResultBox')) $('sfResultBox').style.display = 'block';
+
+        // Trigger download otomatis ke browser tanpa meninggalkan halaman
+        const a = document.createElement('a');
+        a.href = res.download_url;
+        a.download = res.filename || '';
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+
+        setTimeout(() => loadSpartaFlashCenter(), 1200);
+    } catch (err) {
+        showModal('Gagal Menghubungi Server', err.message || 'Gagal mendaftar download.', 'error');
+    } finally {
+        if (btn) btn.disabled = false;
+    }
+}
+
+async function saveSpartaFlashConfig() {
+    try {
+        const payload = {
+            mode: $('sfCfgMode')?.value || 'auto',
+            version: ($('sfCfgVersion')?.value || '').trim(),
+            filename: ($('sfCfgFilename')?.value || '').trim(),
+            github_url: ($('sfCfgGithubUrl')?.value || '').trim(),
+            sha256: ($('sfCfgSha256')?.value || '').trim(),
+        };
+        const res = await safeFetchJson('/api/spartaflash/config', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+        });
+        if (!res.ok) {
+            showModal('Gagal Menyimpan Pengaturan', res.error || 'Pengaturan tidak valid.', 'error');
+            return;
+        }
+        await loadSpartaFlashInfo();
+        showModal('Pengaturan Disimpan', 'Sumber download SpartaFlash berhasil diperbarui.', 'success');
+    } catch (err) {
+        showModal('Error', err.message || 'Gagal menyimpan pengaturan sumber.', 'error');
+    }
+}
+
+async function deleteSpartaFlashRecord(id, name) {
+    const ok = typeof showConfirmModal === 'function'
+        ? await showConfirmModal('Hapus Data Pengunduh', `Hapus catatan unduhan atas nama "${name}"?`)
+        : confirm(`Hapus catatan unduhan atas nama "${name}"?`);
+    if (!ok) return;
+    try {
+        const res = await safeFetchJson(`/api/spartaflash/downloads/${id}`, { method: 'DELETE' });
+        if (!res.ok) {
+            showModal('Gagal Menghapus', res.error || 'Record tidak ditemukan.', 'error');
+            return;
+        }
+        await loadSpartaFlashCenter();
+    } catch (err) {
+        showModal('Error', err.message || 'Gagal menghapus data.', 'error');
+    }
+}
+
+function exportSpartaFlashCsv() {
+    const q = encodeURIComponent(($('sfSearchInput')?.value || '').trim());
+    window.location.href = `/api/spartaflash/downloads/export?q=${q}`;
+}
+
+function copySpartaFlashSha() {
+    const sha = _sfCurrentSha256 || ($('sfMetaSha')?.textContent || '').trim();
+    if (!sha || sha === '-') return;
+    navigator.clipboard?.writeText(sha);
+    showModal('SHA-256 Disalin', `Checksum disalin ke clipboard:\n${sha}`, 'success');
+}
+
+function copySpartaFlashShareLink() {
+    const url = `${window.location.origin}/spartaflash`;
+    navigator.clipboard?.writeText(url);
+    showModal('Link Portal Disalin', `Bagikan link ini ke tim untuk download & pendataan SpartaFlash:\n${url}`, 'success');
+}
 window.addEventListener('beforeunload', () => {
     _saveChartCache(); // simpan sebelum refresh / close
     if (_rafId) { cancelAnimationFrame(_rafId); _rafId = null; }
