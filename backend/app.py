@@ -507,9 +507,9 @@ def _start_mqtt():
         return None
     try:
         try:
-            client = paho_mqtt.Client(callback_api_version=paho_mqtt.CallbackAPIVersion.VERSION2)
+            client = paho_mqtt.Client(callback_api_version=paho_mqtt.CallbackAPIVersion.VERSION2, client_id="web energy meter")
         except AttributeError:
-            client = paho_mqtt.Client()
+            client = paho_mqtt.Client(client_id="web energy meter")
         
         try:
             port = int(os.environ.get("MQTT_PORT", "1883"))
