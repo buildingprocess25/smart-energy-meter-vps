@@ -6492,6 +6492,25 @@ async function loadSpartaFlashDownloads() {
 }
 
 let _sfCurrentDownloadUrl = '';
+let _sfAutoDlTimer = null;
+
+function backToSpartaFlashForm() {
+    if (_sfAutoDlTimer) {
+        clearInterval(_sfAutoDlTimer);
+        _sfAutoDlTimer = null;
+    }
+    if ($('sfStepDownload')) $('sfStepDownload').style.display = 'none';
+    if ($('sfStepRegister')) $('sfStepRegister').style.display = 'grid';
+    loadSpartaFlashCenter();
+}
+
+function copySpartaFlashSha() {
+    const sha = ($('sfThankSha256')?.textContent || _sfCurrentSha256 || '').trim();
+    if (!sha || sha === '-') return;
+    navigator.clipboard?.writeText(sha).then(() => {
+        showModal('SHA-256 Disalin', 'Checksum SHA-256 berhasil disalin ke clipboard.', 'success');
+    }).catch(() => {});
+}
 
 function triggerSpartaFlashPostDownload(url) {
     const targetUrl = url || _sfCurrentDownloadUrl;
@@ -6533,12 +6552,41 @@ async function submitSpartaFlashDownload(event) {
 
         _sfCurrentSha256 = res.sha256 || _sfCurrentSha256;
         _sfCurrentDownloadUrl = res.download_url || '';
-        if ($('sfResultBox')) $('sfResultBox').style.display = 'block';
 
-        // Trigger download otomatis via POST form (tanpa URL GET yang bisa di-copy klik kanan)
-        triggerSpartaFlashPostDownload(_sfCurrentDownloadUrl);
+        // Populate dedicated Thank You & Download page
+        if ($('sfThankUserName')) $('sfThankUserName').textContent = payload.downloader_name || 'Rekan Sparta';
+        if ($('sfThankUserMeta')) $('sfThankUserMeta').textContent = `${payload.branch_division} • ${payload.role_title}`;
+        if ($('sfThankFilename')) $('sfThankFilename').textContent = res.filename || 'SpartaFlash_Setup_Windows_x64.exe';
+        if ($('sfThankSha256')) $('sfThankSha256').textContent = _sfCurrentSha256 || '-';
+        if ($('sfThankDlBtnText')) $('sfThankDlBtnText').textContent = `Download ${res.version || 'SpartaFlash'}`;
 
-        setTimeout(() => loadSpartaFlashCenter(), 1200);
+        // Transition from Form Page -> Thank You & Download Page
+        if ($('sfStepRegister')) $('sfStepRegister').style.display = 'none';
+        if ($('sfStepDownload')) {
+            $('sfStepDownload').style.display = 'block';
+            $('sfStepDownload').scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+
+        const pill = $('sfThankStatusPill');
+        const statusTxt = $('sfThankStatusText');
+        if (pill) pill.classList.remove('ready');
+
+        let sec = 2;
+        if (statusTxt) statusTxt.textContent = `Memulai unduhan otomatis dalam ${sec} detik…`;
+        if (_sfAutoDlTimer) clearInterval(_sfAutoDlTimer);
+        _sfAutoDlTimer = setInterval(() => {
+            sec -= 1;
+            if (sec > 0) {
+                if (statusTxt) statusTxt.textContent = `Memulai unduhan otomatis dalam ${sec} detik…`;
+            } else {
+                clearInterval(_sfAutoDlTimer);
+                _sfAutoDlTimer = null;
+                if (pill) pill.classList.add('ready');
+                if (statusTxt) statusTxt.textContent = '✓ Unduhan otomatis telah dimulai di browser Anda!';
+                triggerSpartaFlashPostDownload(_sfCurrentDownloadUrl);
+                setTimeout(() => loadSpartaFlashCenter(), 1500);
+            }
+        }, 1000);
     } catch (err) {
         showModal('Gagal Menghubungi Server', err.message || 'Gagal mendaftar download.', 'error');
     } finally {
