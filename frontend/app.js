@@ -6396,6 +6396,29 @@ function _sfFormatBytes(bytes) {
 }
 
 async function loadSpartaFlashCenter() {
+    let activeSession = null;
+    try {
+        const raw = sessionStorage.getItem('sf_active_dl_session');
+        if (raw) {
+            const parsed = JSON.parse(raw);
+            if (parsed && parsed.download_url && parsed.expires_at > Date.now()) {
+                activeSession = parsed;
+            } else {
+                sessionStorage.removeItem('sf_active_dl_session');
+            }
+        }
+    } catch (e) {}
+
+    if (activeSession) {
+        _showSpartaFlashThankYou(activeSession, false);
+        await loadSpartaFlashInfo();
+        return;
+    }
+
+    if ($('sfTopbar')) $('sfTopbar').style.display = 'flex';
+    if ($('sfStepRegister')) $('sfStepRegister').style.display = 'grid';
+    if ($('sfHistoryCard')) $('sfHistoryCard').style.display = 'block';
+    if ($('sfStepDownload')) $('sfStepDownload').style.display = 'none';
     await Promise.all([loadSpartaFlashInfo(), loadSpartaFlashDownloads()]);
 }
 
@@ -6499,9 +6522,61 @@ function backToSpartaFlashForm() {
         clearInterval(_sfAutoDlTimer);
         _sfAutoDlTimer = null;
     }
+    try { sessionStorage.removeItem('sf_active_dl_session'); } catch (e) {}
     if ($('sfStepDownload')) $('sfStepDownload').style.display = 'none';
+    if ($('sfTopbar')) $('sfTopbar').style.display = 'flex';
     if ($('sfStepRegister')) $('sfStepRegister').style.display = 'grid';
+    if ($('sfHistoryCard')) $('sfHistoryCard').style.display = 'block';
     loadSpartaFlashCenter();
+}
+
+function _showSpartaFlashThankYou(sessionData, autoDownload) {
+    _sfCurrentSha256 = sessionData.sha256 || _sfCurrentSha256;
+    _sfCurrentDownloadUrl = sessionData.download_url || '';
+
+    if ($('sfThankUserName')) $('sfThankUserName').textContent = sessionData.name || 'Rekan Sparta';
+    if ($('sfThankUserMeta')) $('sfThankUserMeta').textContent = sessionData.meta || '-';
+    if ($('sfThankFilename')) $('sfThankFilename').textContent = sessionData.filename || 'SpartaFlash_Setup_Windows_x64.exe';
+    if ($('sfThankSha256')) $('sfThankSha256').textContent = _sfCurrentSha256 || '-';
+    if ($('sfThankDlBtnText')) $('sfThankDlBtnText').textContent = `Download ${sessionData.version || 'SpartaFlash'}`;
+
+    // Sembunyikan total topbar, form, dan tabel riwayat agar fokus penuh di halaman Ucapan Terima Kasih
+    if ($('sfTopbar')) $('sfTopbar').style.display = 'none';
+    if ($('sfStepRegister')) $('sfStepRegister').style.display = 'none';
+    if ($('sfHistoryCard')) $('sfHistoryCard').style.display = 'none';
+    if ($('sfStepDownload')) {
+        $('sfStepDownload').style.display = 'block';
+        $('sfStepDownload').scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+
+    const pill = $('sfThankStatusPill');
+    const statusTxt = $('sfThankStatusText');
+    if (_sfAutoDlTimer) {
+        clearInterval(_sfAutoDlTimer);
+        _sfAutoDlTimer = null;
+    }
+
+    if (!autoDownload) {
+        if (pill) pill.classList.add('ready');
+        if (statusTxt) statusTxt.textContent = '✓ Sesi unduhan aktif — klik tombol di bawah jika perlu mengunduh ulang.';
+        return;
+    }
+
+    if (pill) pill.classList.remove('ready');
+    let sec = 2;
+    if (statusTxt) statusTxt.textContent = `Memulai unduhan otomatis dalam ${sec} detik…`;
+    _sfAutoDlTimer = setInterval(() => {
+        sec -= 1;
+        if (sec > 0) {
+            if (statusTxt) statusTxt.textContent = `Memulai unduhan otomatis dalam ${sec} detik…`;
+        } else {
+            clearInterval(_sfAutoDlTimer);
+            _sfAutoDlTimer = null;
+            if (pill) pill.classList.add('ready');
+            if (statusTxt) statusTxt.textContent = '✓ Unduhan otomatis telah dimulai di browser Anda!';
+            triggerSpartaFlashPostDownload(_sfCurrentDownloadUrl);
+        }
+    }, 1000);
 }
 
 function copySpartaFlashSha() {
@@ -6550,43 +6625,20 @@ async function submitSpartaFlashDownload(event) {
             return;
         }
 
-        _sfCurrentSha256 = res.sha256 || _sfCurrentSha256;
-        _sfCurrentDownloadUrl = res.download_url || '';
+        const sessionData = {
+            name: payload.downloader_name || 'Rekan Sparta',
+            meta: `${payload.branch_division} • ${payload.role_title}`,
+            download_url: res.download_url || '',
+            filename: res.filename || 'SpartaFlash_Setup_Windows_x64.exe',
+            version: res.version || 'SpartaFlash',
+            sha256: res.sha256 || _sfCurrentSha256 || '',
+            expires_at: Date.now() + (5 * 60 * 1000),
+        };
+        try {
+            sessionStorage.setItem('sf_active_dl_session', JSON.stringify(sessionData));
+        } catch (e) {}
 
-        // Populate dedicated Thank You & Download page
-        if ($('sfThankUserName')) $('sfThankUserName').textContent = payload.downloader_name || 'Rekan Sparta';
-        if ($('sfThankUserMeta')) $('sfThankUserMeta').textContent = `${payload.branch_division} • ${payload.role_title}`;
-        if ($('sfThankFilename')) $('sfThankFilename').textContent = res.filename || 'SpartaFlash_Setup_Windows_x64.exe';
-        if ($('sfThankSha256')) $('sfThankSha256').textContent = _sfCurrentSha256 || '-';
-        if ($('sfThankDlBtnText')) $('sfThankDlBtnText').textContent = `Download ${res.version || 'SpartaFlash'}`;
-
-        // Transition from Form Page -> Thank You & Download Page
-        if ($('sfStepRegister')) $('sfStepRegister').style.display = 'none';
-        if ($('sfStepDownload')) {
-            $('sfStepDownload').style.display = 'block';
-            $('sfStepDownload').scrollIntoView({ behavior: 'smooth', block: 'start' });
-        }
-
-        const pill = $('sfThankStatusPill');
-        const statusTxt = $('sfThankStatusText');
-        if (pill) pill.classList.remove('ready');
-
-        let sec = 2;
-        if (statusTxt) statusTxt.textContent = `Memulai unduhan otomatis dalam ${sec} detik…`;
-        if (_sfAutoDlTimer) clearInterval(_sfAutoDlTimer);
-        _sfAutoDlTimer = setInterval(() => {
-            sec -= 1;
-            if (sec > 0) {
-                if (statusTxt) statusTxt.textContent = `Memulai unduhan otomatis dalam ${sec} detik…`;
-            } else {
-                clearInterval(_sfAutoDlTimer);
-                _sfAutoDlTimer = null;
-                if (pill) pill.classList.add('ready');
-                if (statusTxt) statusTxt.textContent = '✓ Unduhan otomatis telah dimulai di browser Anda!';
-                triggerSpartaFlashPostDownload(_sfCurrentDownloadUrl);
-                setTimeout(() => loadSpartaFlashCenter(), 1500);
-            }
-        }, 1000);
+        _showSpartaFlashThankYou(sessionData, true);
     } catch (err) {
         showModal('Gagal Menghubungi Server', err.message || 'Gagal mendaftar download.', 'error');
     } finally {
