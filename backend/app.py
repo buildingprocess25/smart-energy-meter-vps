@@ -495,7 +495,7 @@ def _guard_request():
 
     expected = _portal_token()
     is_write = request.method not in ('GET', 'HEAD', 'OPTIONS')
-    if request.path == '/api/spartaflash/register' and _dashboard_ui_enabled():
+    if (request.path == '/api/spartaflash/register' or request.path.startswith('/api/spartaflash/download/')) and _dashboard_ui_enabled():
         return None
     if not expected:
         # Writes fail closed. Reads stay open so a missing env does not blind the portal.
