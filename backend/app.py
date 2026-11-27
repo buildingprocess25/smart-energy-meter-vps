@@ -45,6 +45,21 @@ def _parse_uptime_seconds(raw_uptime) -> int | None:
         return int(m2.group(1)) * 3600 + int(m2.group(2)) * 60 + int(m2.group(3))
     return None
 
+
+def _update_device_uptime(device_id: str, raw_uptime) -> None:
+    if raw_uptime is None:
+        return
+    if 'status' not in _mqtt_live_data[device_id]:
+        _mqtt_live_data[device_id]['status'] = {}
+    _mqtt_live_data[device_id]['status']['uptime'] = raw_uptime
+    up_sec = _parse_uptime_seconds(raw_uptime)
+    if up_sec is not None:
+        _mqtt_live_data[device_id]['status']['uptime_sec'] = up_sec
+        prev_sec = _device_last_uptime_sec.get(device_id)
+        if prev_sec is not None and (up_sec + 15) < prev_sec:
+            _device_last_reboot_ts[device_id] = int(time.time() * 1000)
+        _device_last_uptime_sec[device_id] = up_sec
+
 MAP_METRIC = {
     'Voltage_V': 'Voltage (V)',
     'Current_A': 'Current (A)',
@@ -152,6 +167,17 @@ def _on_message(client, userdata, msg):
                 if 'status' not in _mqtt_live_data[device_id]:
                     _mqtt_live_data[device_id]['status'] = {}
                 _mqtt_live_data[device_id]['status'][sub_parts[1]] = payload
+                if sub_parts[1].lower() == 'uptime':
+                    _update_device_uptime(device_id, payload)
+                elif payload.strip().startswith('{'):
+                    try:
+                        st_json = json.loads(payload)
+                        if isinstance(st_json, dict):
+                            up_val = st_json.get('uptime') if 'uptime' in st_json else st_json.get('Uptime')
+                            if up_val is not None:
+                                _update_device_uptime(device_id, up_val)
+                    except Exception:
+                        pass
 
             # Case 2B: Tasmota tele/stat (AlfaEnergy CT & Plug) -> tele/SENSOR, tele/STATE, stat/STATE, stat/POWER, etc.
             elif len(sub_parts) >= 2 and sub_parts[0].lower() in ('tele', 'stat'):
@@ -267,14 +293,7 @@ def _on_message(client, userdata, msg):
                         if 'POWER' in s_data:
                             _mqtt_live_data[device_id]['status']['relay'] = s_data['POWER']
                         if 'Uptime' in s_data:
-                            _mqtt_live_data[device_id]['status']['uptime'] = s_data['Uptime']
-                            up_sec = _parse_uptime_seconds(s_data['Uptime'])
-                            if up_sec is not None:
-                                _mqtt_live_data[device_id]['status']['uptime_sec'] = up_sec
-                                prev_sec = _device_last_uptime_sec.get(device_id)
-                                if prev_sec is not None and (up_sec + 15) < prev_sec:
-                                    _device_last_reboot_ts[device_id] = int(time.time() * 1000)
-                                _device_last_uptime_sec[device_id] = up_sec
+                            _update_device_uptime(device_id, s_data['Uptime'])
                         if 'Wifi' in s_data and isinstance(s_data['Wifi'], dict):
                             _mqtt_live_data[device_id]['status']['wifi'] = s_data['Wifi']
                         if 'Heap' in s_data:
