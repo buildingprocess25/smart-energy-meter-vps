@@ -2797,13 +2797,13 @@ _spartaflash_sqlite_lock = threading.Lock()
 _spartaflash_gh_cache = {"key": None, "expires": 0.0, "asset": None, "error": ""}
 
 
-def _spartaflash_cookie_sig(token: str, ip_addr: str) -> str:
+def _spartaflash_cookie_sig(token: str) -> str:
     secret = (
         os.environ.get("PORTAL_CONTROL_TOKEN")
         or os.environ.get("SPARTAFLASH_GITHUB_TOKEN")
         or "spartaflash-dl-bind-key"
     ).encode("utf-8")
-    return hmac.new(secret, f"{token}|{ip_addr}".encode("utf-8"), hashlib.sha256).hexdigest()
+    return hmac.new(secret, token.encode("utf-8"), hashlib.sha256).hexdigest()
 
 
 def _get_spartaflash_github_token() -> str:
@@ -3297,8 +3297,9 @@ def spartaflash_register_download():
         is_https = request.is_secure or request.headers.get("X-Forwarded-Proto", "").lower() == "https"
         resp.set_cookie(
             "sf_dl_bind",
-            _spartaflash_cookie_sig(token, ip_addr),
+            _spartaflash_cookie_sig(token),
             max_age=300,
+            path="/",
             httponly=True,
             samesite="Lax",
             secure=is_https,
@@ -3350,11 +3351,10 @@ def spartaflash_execute_download(token: str):
                 finally:
                     conn.close()
 
-        # Kunci token ke browser cookie + IP pengisi form
-        req_ip = _get_client_ip()
+        # Kunci token ke HttpOnly browser cookie pengisi form (tahan terhadap pergantian IPv4/IPv6 proxy)
         got_sig = (request.cookies.get("sf_dl_bind") or "").strip()
-        expected_sig = _spartaflash_cookie_sig(clean_token, rec_ip)
-        if not got_sig or not hmac.compare_digest(got_sig, expected_sig) or (rec_ip and req_ip != rec_ip):
+        expected_sig = _spartaflash_cookie_sig(clean_token)
+        if not got_sig or not hmac.compare_digest(got_sig, expected_sig):
             return jsonify({
                 "ok": False,
                 "error": "Akses ditolak: link unduhan hanya berlaku di browser yang mengisi form. Silakan isi form pendataan terlebih dahulu.",

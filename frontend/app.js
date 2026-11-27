@@ -6618,6 +6618,7 @@ async function submitSpartaFlashDownload(event) {
     try {
         const res = await safeFetchJson('/api/spartaflash/register', {
             method: 'POST',
+            credentials: 'same-origin',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload),
         });
