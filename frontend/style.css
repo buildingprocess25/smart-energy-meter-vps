@@ -2416,6 +2416,16 @@ mark.search-highlight { background: rgba(187,23,36,0.12); color: var(--brand); b
 .sparta-downloads-table th:nth-child(5) {
     text-align: left !important;
 }
+#spartaflashContent .table-container {
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+#spartaflashContent .table-scroll {
+    max-height: 380px;
+    overflow-y: auto;
+    overflow-x: auto;
+}
 .sf-btn-del {
     padding: 4px 9px;
     font-size: 11px;
