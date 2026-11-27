@@ -24,6 +24,22 @@ _db_last_ping = {}
 _buffer_sync_status = {}  # device_id -> {'status': str, 'total': int, 'replayed': int, 'downtime_sec': int, 'start_time': float, 'last_updated': float}
 _device_last_uptime_sec = {}
 _device_last_reboot_ts = {}
+_legacy_status_last_polled = {}
+
+
+def _request_legacy_status_if_needed(device_id: str, min_interval: float = 45.0):
+    if not device_id or device_id.upper().startswith(('CT-', 'PLUG-')):
+        return
+    now = time.time()
+    if (now - _legacy_status_last_polled.get(device_id, 0.0)) < min_interval:
+        return
+    _legacy_status_last_polled[device_id] = now
+    try:
+        if _mqtt_client is not None:
+            _mqtt_client.publish(f"AlfaEnergy/{device_id}/cmd/getStatus", "1")
+            _mqtt_client.publish(f"energymeter/{device_id}/cmd/getStatus", "1")
+    except Exception:
+        pass
 
 
 def _parse_uptime_seconds(raw_uptime) -> int | None:
@@ -161,6 +177,7 @@ def _on_message(client, userdata, msg):
             # Case 1: Timestamp -> AlfaEnergy/EM-0001/Timestamp atau energymeter/MC3/Timestamp
             if len(sub_parts) == 1 and sub_parts[0] == 'Timestamp':
                 _mqtt_live_data[device_id]['Timestamp'] = payload
+                _request_legacy_status_if_needed(device_id, min_interval=45.0)
 
             # Case 2: Status -> AlfaEnergy/EM-0001/status/...
             elif len(sub_parts) >= 2 and sub_parts[0] == 'status':
@@ -1689,6 +1706,8 @@ def list_devices():
             st = st if isinstance(st, dict) else {}
             up_raw = st.get('uptime')
             up_sec = st.get('uptime_sec') if st.get('uptime_sec') is not None else _parse_uptime_seconds(up_raw)
+            if online and up_sec is None:
+                _request_legacy_status_if_needed(did, min_interval=30.0)
             devices.append({
                 'id': did,
                 'name': did,
@@ -1763,6 +1782,8 @@ def list_devices():
             st = st if isinstance(st, dict) else {}
             up_raw = st.get('uptime')
             up_sec = st.get('uptime_sec') if st.get('uptime_sec') is not None else _parse_uptime_seconds(up_raw)
+            if online and up_sec is None:
+                _request_legacy_status_if_needed(did, min_interval=30.0)
             devices.append({
                 'id': did,
                 'name': device_name,
