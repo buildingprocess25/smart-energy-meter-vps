@@ -6415,10 +6415,10 @@ async function loadSpartaFlashCenter() {
         return;
     }
 
-    if ($('sfTopbar')) $('sfTopbar').style.display = 'flex';
-    if ($('sfStepRegister')) $('sfStepRegister').style.display = 'grid';
-    if ($('sfHistoryCard')) $('sfHistoryCard').style.display = 'block';
-    if ($('sfStepDownload')) $('sfStepDownload').style.display = 'none';
+    if ($('sfTopbar')) { $('sfTopbar').classList.remove('sf-hidden'); $('sfTopbar').style.display = 'flex'; }
+    if ($('sfStepRegister')) { $('sfStepRegister').classList.remove('sf-hidden'); $('sfStepRegister').style.display = 'grid'; }
+    if ($('sfHistoryCard')) { $('sfHistoryCard').classList.remove('sf-hidden'); $('sfHistoryCard').style.display = 'block'; }
+    if ($('sfStepDownload')) { $('sfStepDownload').classList.add('sf-hidden'); $('sfStepDownload').style.display = 'none'; }
     await Promise.all([loadSpartaFlashInfo(), loadSpartaFlashDownloads()]);
 }
 
@@ -6523,10 +6523,10 @@ function backToSpartaFlashForm() {
         _sfAutoDlTimer = null;
     }
     try { sessionStorage.removeItem('sf_active_dl_session'); } catch (e) {}
-    if ($('sfStepDownload')) $('sfStepDownload').style.display = 'none';
-    if ($('sfTopbar')) $('sfTopbar').style.display = 'flex';
-    if ($('sfStepRegister')) $('sfStepRegister').style.display = 'grid';
-    if ($('sfHistoryCard')) $('sfHistoryCard').style.display = 'block';
+    if ($('sfStepDownload')) { $('sfStepDownload').classList.add('sf-hidden'); $('sfStepDownload').style.display = 'none'; }
+    if ($('sfTopbar')) { $('sfTopbar').classList.remove('sf-hidden'); $('sfTopbar').style.display = 'flex'; }
+    if ($('sfStepRegister')) { $('sfStepRegister').classList.remove('sf-hidden'); $('sfStepRegister').style.display = 'grid'; }
+    if ($('sfHistoryCard')) { $('sfHistoryCard').classList.remove('sf-hidden'); $('sfHistoryCard').style.display = 'block'; }
     loadSpartaFlashCenter();
 }
 
@@ -6541,10 +6541,11 @@ function _showSpartaFlashThankYou(sessionData, autoDownload) {
     if ($('sfThankDlBtnText')) $('sfThankDlBtnText').textContent = `Download ${sessionData.version || 'SpartaFlash'}`;
 
     // Sembunyikan total topbar, form, dan tabel riwayat agar fokus penuh di halaman Ucapan Terima Kasih
-    if ($('sfTopbar')) $('sfTopbar').style.display = 'none';
-    if ($('sfStepRegister')) $('sfStepRegister').style.display = 'none';
-    if ($('sfHistoryCard')) $('sfHistoryCard').style.display = 'none';
+    if ($('sfTopbar')) { $('sfTopbar').classList.add('sf-hidden'); $('sfTopbar').style.display = 'none'; }
+    if ($('sfStepRegister')) { $('sfStepRegister').classList.add('sf-hidden'); $('sfStepRegister').style.display = 'none'; }
+    if ($('sfHistoryCard')) { $('sfHistoryCard').classList.add('sf-hidden'); $('sfHistoryCard').style.display = 'none'; }
     if ($('sfStepDownload')) {
+        $('sfStepDownload').classList.remove('sf-hidden');
         $('sfStepDownload').style.display = 'block';
         $('sfStepDownload').scrollIntoView({ behavior: 'smooth', block: 'start' });
     }

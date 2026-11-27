@@ -2520,6 +2520,14 @@ mark.search-highlight { background: rgba(187,23,36,0.12); color: var(--brand); b
     to { opacity: 1; transform: translateY(0); }
 }
 
+.sf-hidden,
+#sfTopbar.sf-hidden,
+#sfStepRegister.sf-hidden,
+#sfStepDownload.sf-hidden,
+#sfHistoryCard.sf-hidden {
+    display: none !important;
+}
+
 .sf-thankyou-card {
     animation: sfFadeUp 0.28s ease-out;
     padding: 28px 24px !important;
