@@ -146,6 +146,8 @@
                         <h2>Real-time Monitoring</h2>
                     </div>
                     <div class="summary-topbar-right">
+                        <div class="sf-smart-status-pill" id="deviceSmartStatusBadge" style="display:none;"></div>
+                        <div class="sf-uptime-pill" id="deviceUptimeBadge" style="display:none;"></div>
                         <div class="last-update connecting" id="lastUpdate">Waiting for data…</div>
                         <select id="summaryDeviceSelect" class="summary-device-select-badge"
                             onchange="onDeviceChange(this.value)">

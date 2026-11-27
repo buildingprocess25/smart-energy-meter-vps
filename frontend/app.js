@@ -1421,6 +1421,76 @@ document.addEventListener('click', e => { if (e.target === $('customModal')) clo
 document.addEventListener('keydown', e => { if (e.key === 'Escape') closeModal(); });
 const CARD_IDS = ['voltage', 'current', 'power', 'frequency', 'energy', 'powerFactor'];
 const CARD_DEC = { voltage: 1, current: 2, power: 1, frequency: 1, energy: 3, powerFactor: 3 };
+
+function _formatUptimeHuman(sec, rawStr) {
+    if (sec != null && !isNaN(sec) && sec >= 0) {
+        const s = Math.floor(sec);
+        const d = Math.floor(s / 86400);
+        const h = Math.floor((s % 86400) / 3600);
+        const m = Math.floor((s % 3600) / 60);
+        const remS = s % 60;
+        if (d > 0) return `${d}h ${h}j ${m}m`;
+        if (h > 0) return `${h}j ${m}m`;
+        if (m > 0) return `${m}m ${remS}d`;
+        return `${remS}d`;
+    }
+    return rawStr ? String(rawStr) : '';
+}
+
+function _updateDeviceSmartBadges(deviceId, liveData, onlineOverride) {
+    const upEl = $('deviceUptimeBadge');
+    const stEl = $('deviceSmartStatusBadge');
+    if (!upEl && !stEl) return;
+
+    const dev = (typeof allDevices !== 'undefined' && Array.isArray(allDevices))
+        ? allDevices.find(x => x.id === deviceId)
+        : null;
+    const isOnline = (onlineOverride !== undefined) ? onlineOverride : (dev ? !!dev.online : true);
+    const upSec = dev && dev.uptimeSec != null ? Number(dev.uptimeSec) : null;
+    const upText = dev ? _formatUptimeHuman(upSec, dev.uptime) : '';
+
+    if (upEl) {
+        if (isOnline && upText) {
+            const isRecent = upSec !== null && upSec < 600;
+            upEl.style.display = 'inline-flex';
+            upEl.className = 'sf-uptime-pill' + (isRecent ? ' is-recent' : '');
+            upEl.textContent = isRecent ? `⚠ Baru Nyala: ${upText}` : `⏱ Uptime: ${upText}`;
+            upEl.title = isRecent
+                ? 'Perangkat baru menyala (<10 menit), indikasi listrik baru pulih dari padam/reboot'
+                : 'Lama perangkat menyala terus-menerus tanpa mati listrik';
+        } else {
+            upEl.style.display = 'none';
+        }
+    }
+
+    if (stEl) {
+        const powerW = liveData && liveData.Power != null ? parseFloat(liveData.Power) : null;
+        const voltV = liveData && liveData.Voltage != null ? parseFloat(liveData.Voltage) : null;
+        stEl.style.display = 'inline-flex';
+        stEl.className = 'sf-smart-status-pill';
+        if (!isOnline) {
+            stEl.classList.add('is-outage');
+            stEl.textContent = '🔴 PLN PADAM / OFFLINE';
+            stEl.title = 'Perangkat terputus mendadak (indikasi pemadaman PLN / Wi-Fi mati)';
+        } else if (upSec !== null && upSec < 600) {
+            stEl.classList.add('is-recovered');
+            stEl.textContent = '🟠 PULIH DARI PADAM';
+            stEl.title = `Perangkat baru restart ${upText} lalu`;
+        } else if (powerW !== null && !isNaN(powerW) && powerW <= 10 && (voltV === null || voltV >= 180)) {
+            stEl.classList.add('is-remote-off');
+            stEl.textContent = '🔵 AC OFF (Remote)';
+            stEl.title = 'Listrik PLN normal (~220V) & Uptime tetap berjalan; beban/AC dimatikan via remote/standby';
+        } else if (powerW !== null && !isNaN(powerW) && powerW > 10) {
+            stEl.classList.add('is-on');
+            stEl.textContent = '🟢 BEBAN / AC ON';
+            stEl.title = 'Perangkat online dan beban aktif';
+        } else {
+            stEl.classList.add('is-on');
+            stEl.textContent = '🟢 ONLINE';
+        }
+    }
+}
+
 function updateDisplayCards(data) {
     const fmt = (v, d) => (v != null && !isNaN(v)) ? parseFloat(v).toFixed(d) : '---';
     CARD_IDS.forEach(id => {
@@ -1433,6 +1503,7 @@ function updateDisplayCards(data) {
         DOM.lastUpdate.classList.add('online');
         DOM.lastUpdate.classList.remove('offline');
     }
+    _updateDeviceSmartBadges(selectedDevice, data, true);
 }
 function updateDisplayCardsBlank(state = 'offline') {
     CARD_IDS.forEach(id => { const el = $(id); if (el) el.textContent = '---'; });
@@ -1446,6 +1517,7 @@ function updateDisplayCardsBlank(state = 'offline') {
             DOM.lastUpdate.classList.add('offline');
         }
     }
+    _updateDeviceSmartBadges(selectedDevice, null, state === 'connecting');
 }
 const PARAM_INFO = {
     voltage: { label: 'Voltage', unit: 'V', color: '#FFA500', border: '#FF8C00' },
@@ -2141,6 +2213,60 @@ function initChart() {
                 },
             },
         },
+        plugins: [{
+            id: 'powerEventMarkers',
+            afterDatasetsDraw(chart) {
+                if (timeFilter !== 'all' || !Array.isArray(rawRealtimeData) || rawRealtimeData.length === 0) return;
+                const { ctx: c, chartArea, scales } = chart;
+                const xScale = scales.x;
+                if (!xScale || !chartArea) return;
+                const ph = selectedPhase || Object.keys(rawRealtimeData[rawRealtimeData.length - 1] || {}).find(k => k !== 'ts');
+                if (!ph) return;
+
+                c.save();
+                let prevPower = null;
+                let lastOutageX = -999;
+                let lastOffX = -999;
+                for (let i = 0; i < rawRealtimeData.length; i++) {
+                    const pt = rawRealtimeData[i];
+                    const d = pt && pt[ph];
+                    if (!d) continue;
+                    const x = xScale.getPixelForValue(i);
+                    if (x < chartArea.left || x > chartArea.right) continue;
+
+                    const isOutage = !!d.offline || (i > 0 && rawRealtimeData[i - 1] && (pt.ts - rawRealtimeData[i - 1].ts) > 120000);
+                    const pwr = d['Power (W)'] != null ? d['Power (W)'] : d.Power;
+                    const volt = d['Voltage (V)'] != null ? d['Voltage (V)'] : d.Voltage;
+
+                    if (isOutage && (x - lastOutageX) > 28) {
+                        lastOutageX = x;
+                        c.strokeStyle = 'rgba(239, 68, 68, 0.7)';
+                        c.lineWidth = 1.2;
+                        c.setLineDash([4, 3]);
+                        c.beginPath();
+                        c.moveTo(x, chartArea.top + 14);
+                        c.lineTo(x, chartArea.bottom);
+                        c.stroke();
+                        c.setLineDash([]);
+                        c.fillStyle = '#ef4444';
+                        c.font = 'bold 10px sans-serif';
+                        c.textAlign = 'center';
+                        c.fillText('⚡', x, chartArea.top + 11);
+                    } else if (!d.offline && prevPower !== null && prevPower > 20 && pwr != null && pwr <= 10 && (volt == null || volt >= 180) && (x - lastOffX) > 36) {
+                        lastOffX = x;
+                        c.fillStyle = '#38bdf8';
+                        c.beginPath();
+                        c.arc(x, chartArea.top + 16, 3.5, 0, Math.PI * 2);
+                        c.fill();
+                        c.font = 'bold 9px sans-serif';
+                        c.textAlign = 'center';
+                        c.fillText('OFF', x, chartArea.top + 9);
+                    }
+                    if (pwr != null && !isNaN(pwr)) prevPower = pwr;
+                }
+                c.restore();
+            },
+        }],
     });
     _initChartGestures(realtimeChart);
     if (_clipPathCleanupId) {
@@ -2763,6 +2889,11 @@ function renderDeviceList(devices) {
         const syncBadgeHTML = isSyncing
             ? `<span style="background:rgba(245,158,11,0.18);color:#f59e0b;border:1px solid rgba(245,158,11,0.4);font-size:9.5px;font-weight:700;padding:1px 6px;border-radius:4px;display:inline-flex;align-items:center;gap:4px" title="Sedang menyinkronkan data offline buffer LittleFS (${d.bufferSync.replayed || 0}/${d.bufferSync.total || 0})"><span>🔄</span> SYNC (${d.bufferSync.replayed || 0}/${d.bufferSync.total || 0})</span>`
             : '';
+        const upSec = d.uptimeSec != null ? Number(d.uptimeSec) : null;
+        const upHuman = _formatUptimeHuman(upSec, d.uptime);
+        const uptimeBadgeHTML = (d.online && upHuman)
+            ? `<span class="sf-dev-uptime-tag ${upSec !== null && upSec < 600 ? 'is-recent' : ''}" title="Uptime perangkat">${upSec !== null && upSec < 600 ? '⚠ Baru Nyala ' : '⏱ '}${upHuman}</span>`
+            : '';
 
         const subInfoHTML = isSyncing
             ? `<span style="color:#f59e0b;font-weight:600">Menyinkronkan data offline buffer (${d.bufferSync.replayed || 0}/${d.bufferSync.total || 0})...</span>`
@@ -2778,6 +2909,7 @@ function renderDeviceList(devices) {
                             <strong class="device-id-title">${d.id}</strong>
                             ${storeTagHTML}
                             ${recBadgeHTML}
+                            ${uptimeBadgeHTML}
                             ${syncBadgeHTML}
                         </div>
                         <p class="device-item-id">${subInfoHTML}</p>

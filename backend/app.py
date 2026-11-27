@@ -22,6 +22,28 @@ _mqtt_live_data = {}
 _mqtt_last_seen = {}
 _db_last_ping = {}
 _buffer_sync_status = {}  # device_id -> {'status': str, 'total': int, 'replayed': int, 'downtime_sec': int, 'start_time': float, 'last_updated': float}
+_device_last_uptime_sec = {}
+_device_last_reboot_ts = {}
+
+
+def _parse_uptime_seconds(raw_uptime) -> int | None:
+    if raw_uptime is None:
+        return None
+    if isinstance(raw_uptime, (int, float)):
+        return max(0, int(raw_uptime))
+    s = str(raw_uptime).strip()
+    if not s:
+        return None
+    if s.isdigit():
+        return int(s)
+    # Tasmota format: "0T02:14:30" or "14T03:20:10"
+    m = re.match(r'^(\d+)\s*[Td]\s*(\d{1,2}):(\d{2}):(\d{2})$', s)
+    if m:
+        return int(m.group(1)) * 86400 + int(m.group(2)) * 3600 + int(m.group(3)) * 60 + int(m.group(4))
+    m2 = re.match(r'^(\d{1,2}):(\d{2}):(\d{2})$', s)
+    if m2:
+        return int(m2.group(1)) * 3600 + int(m2.group(2)) * 60 + int(m2.group(3))
+    return None
 
 MAP_METRIC = {
     'Voltage_V': 'Voltage (V)',
@@ -246,6 +268,13 @@ def _on_message(client, userdata, msg):
                             _mqtt_live_data[device_id]['status']['relay'] = s_data['POWER']
                         if 'Uptime' in s_data:
                             _mqtt_live_data[device_id]['status']['uptime'] = s_data['Uptime']
+                            up_sec = _parse_uptime_seconds(s_data['Uptime'])
+                            if up_sec is not None:
+                                _mqtt_live_data[device_id]['status']['uptime_sec'] = up_sec
+                                prev_sec = _device_last_uptime_sec.get(device_id)
+                                if prev_sec is not None and (up_sec + 15) < prev_sec:
+                                    _device_last_reboot_ts[device_id] = int(time.time() * 1000)
+                                _device_last_uptime_sec[device_id] = up_sec
                         if 'Wifi' in s_data and isinstance(s_data['Wifi'], dict):
                             _mqtt_live_data[device_id]['status']['wifi'] = s_data['Wifi']
                         if 'Heap' in s_data:
@@ -1637,6 +1666,10 @@ def list_devices():
                 for ph in sorted([k for k in raw if _is_valid_phase_key(k) and isinstance(raw.get(k), dict)], key=_phase_sort_key):
                     disp_name = _get_default_sensor_display_name(ph)
                     phases.append({'phase': ph, 'name': disp_name, 'enabled': True})
+            st = (raw or {}).get('status') if isinstance(raw, dict) else {}
+            st = st if isinstance(st, dict) else {}
+            up_raw = st.get('uptime')
+            up_sec = st.get('uptime_sec') if st.get('uptime_sec') is not None else _parse_uptime_seconds(up_raw)
             devices.append({
                 'id': did,
                 'name': did,
@@ -1645,7 +1678,10 @@ def list_devices():
                 'phases': phases,
                 'phaseCount': len(phases),
                 'storeId': None,
-                'bufferSync': _buffer_sync_status.get(did, None)
+                'bufferSync': _buffer_sync_status.get(did, None),
+                'uptime': up_raw,
+                'uptimeSec': up_sec,
+                'lastRebootTs': _device_last_reboot_ts.get(did),
             })
         return jsonify(devices)
 
@@ -1703,6 +1739,11 @@ def list_devices():
                     'enabled': s.get('enabled', True),
                     'color': s.get('color', None)
                 })
+            raw_live = _mqtt_live_data.get(did) or {}
+            st = raw_live.get('status') if isinstance(raw_live, dict) else {}
+            st = st if isinstance(st, dict) else {}
+            up_raw = st.get('uptime')
+            up_sec = st.get('uptime_sec') if st.get('uptime_sec') is not None else _parse_uptime_seconds(up_raw)
             devices.append({
                 'id': did,
                 'name': device_name,
@@ -1713,7 +1754,10 @@ def list_devices():
                 'storeId': store_id,
                 'latitude': lat,
                 'longitude': lng,
-                'bufferSync': _buffer_sync_status.get(did, None)
+                'bufferSync': _buffer_sync_status.get(did, None),
+                'uptime': up_raw,
+                'uptimeSec': up_sec,
+                'lastRebootTs': _device_last_reboot_ts.get(did),
             })
     except Exception as e:
         print(f"Error listing devices: {e}")
