@@ -6411,15 +6411,15 @@ async function loadSpartaFlashCenter() {
 
     if (activeSession) {
         _showSpartaFlashThankYou(activeSession, false);
-        await loadSpartaFlashInfo();
+        await Promise.all([loadSpartaFlashInfo(), loadSpartaFlashDownloads()]);
         return;
     }
 
     if ($('sfTopbar')) { $('sfTopbar').classList.remove('sf-hidden'); $('sfTopbar').style.display = 'flex'; }
     if ($('sfStepRegister')) { $('sfStepRegister').classList.remove('sf-hidden'); $('sfStepRegister').style.display = 'grid'; }
-    if ($('sfHistoryCard')) { $('sfHistoryCard').classList.remove('sf-hidden'); $('sfHistoryCard').style.display = 'block'; }
+    if ($('sfHistoryCard')) { $('sfHistoryCard').classList.add('sf-hidden'); $('sfHistoryCard').style.display = 'none'; }
     if ($('sfStepDownload')) { $('sfStepDownload').classList.add('sf-hidden'); $('sfStepDownload').style.display = 'none'; }
-    await Promise.all([loadSpartaFlashInfo(), loadSpartaFlashDownloads()]);
+    await loadSpartaFlashInfo();
 }
 
 async function loadSpartaFlashInfo() {
@@ -6526,7 +6526,7 @@ function backToSpartaFlashForm() {
     if ($('sfStepDownload')) { $('sfStepDownload').classList.add('sf-hidden'); $('sfStepDownload').style.display = 'none'; }
     if ($('sfTopbar')) { $('sfTopbar').classList.remove('sf-hidden'); $('sfTopbar').style.display = 'flex'; }
     if ($('sfStepRegister')) { $('sfStepRegister').classList.remove('sf-hidden'); $('sfStepRegister').style.display = 'grid'; }
-    if ($('sfHistoryCard')) { $('sfHistoryCard').classList.remove('sf-hidden'); $('sfHistoryCard').style.display = 'block'; }
+    if ($('sfHistoryCard')) { $('sfHistoryCard').classList.add('sf-hidden'); $('sfHistoryCard').style.display = 'none'; }
     loadSpartaFlashCenter();
 }
 
@@ -6540,15 +6540,16 @@ function _showSpartaFlashThankYou(sessionData, autoDownload) {
     if ($('sfThankSha256')) $('sfThankSha256').textContent = _sfCurrentSha256 || '-';
     if ($('sfThankDlBtnText')) $('sfThankDlBtnText').textContent = `Download ${sessionData.version || 'SpartaFlash'}`;
 
-    // Sembunyikan total topbar, form, dan tabel riwayat agar fokus penuh di halaman Ucapan Terima Kasih
+    // Sembunyikan topbar & form; tampilkan halaman Ucapan Terima Kasih + Riwayat Pengunduh
     if ($('sfTopbar')) { $('sfTopbar').classList.add('sf-hidden'); $('sfTopbar').style.display = 'none'; }
     if ($('sfStepRegister')) { $('sfStepRegister').classList.add('sf-hidden'); $('sfStepRegister').style.display = 'none'; }
-    if ($('sfHistoryCard')) { $('sfHistoryCard').classList.add('sf-hidden'); $('sfHistoryCard').style.display = 'none'; }
+    if ($('sfHistoryCard')) { $('sfHistoryCard').classList.remove('sf-hidden'); $('sfHistoryCard').style.display = 'flex'; }
     if ($('sfStepDownload')) {
         $('sfStepDownload').classList.remove('sf-hidden');
         $('sfStepDownload').style.display = 'block';
         $('sfStepDownload').scrollIntoView({ behavior: 'smooth', block: 'start' });
     }
+    loadSpartaFlashDownloads();
 
     const pill = $('sfThankStatusPill');
     const statusTxt = $('sfThankStatusText');
@@ -6576,6 +6577,7 @@ function _showSpartaFlashThankYou(sessionData, autoDownload) {
             if (pill) pill.classList.add('ready');
             if (statusTxt) statusTxt.textContent = '✓ Unduhan otomatis telah dimulai di browser Anda!';
             triggerSpartaFlashPostDownload(_sfCurrentDownloadUrl);
+            setTimeout(() => loadSpartaFlashDownloads(), 1500);
         }
     }, 1000);
 }
