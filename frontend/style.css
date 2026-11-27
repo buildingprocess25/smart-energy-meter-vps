@@ -2457,7 +2457,7 @@ mark.search-highlight { background: rgba(187,23,36,0.12); color: var(--brand); b
     margin: 4px auto 16px;
 }
 .sf-layout-simple {
-    grid-template-columns: 1.15fr 0.95fr;
+    grid-template-columns: 1fr;
     gap: 16px;
 }
 .sf-guide-list {
