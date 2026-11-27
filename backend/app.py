@@ -3,7 +3,7 @@ import os, re, threading, time, hashlib, hmac, json, logging, contextlib, csv, i
 from collections import deque
 from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
-from flask import Flask, jsonify, render_template, request, send_file, redirect, Response, stream_with_context
+from flask import Flask, jsonify, render_template, request, send_file, redirect, Response, stream_with_context, make_response
 import requests as http_requests
 from werkzeug.exceptions import HTTPException
 import paho.mqtt.client as paho_mqtt
@@ -2797,6 +2797,15 @@ _spartaflash_sqlite_lock = threading.Lock()
 _spartaflash_gh_cache = {"key": None, "expires": 0.0, "asset": None, "error": ""}
 
 
+def _spartaflash_cookie_sig(token: str, ip_addr: str) -> str:
+    secret = (
+        os.environ.get("PORTAL_CONTROL_TOKEN")
+        or os.environ.get("SPARTAFLASH_GITHUB_TOKEN")
+        or "spartaflash-dl-bind-key"
+    ).encode("utf-8")
+    return hmac.new(secret, f"{token}|{ip_addr}".encode("utf-8"), hashlib.sha256).hexdigest()
+
+
 def _get_spartaflash_github_token() -> str:
     return (os.environ.get("SPARTAFLASH_GITHUB_TOKEN") or os.environ.get("GITHUB_TOKEN") or "").strip()
 
@@ -3274,7 +3283,7 @@ def spartaflash_register_download():
                 finally:
                     conn.close()
 
-        return jsonify({
+        resp = make_response(jsonify({
             "ok": True,
             "id": rec_id,
             "token": token,
@@ -3284,12 +3293,22 @@ def spartaflash_register_download():
             "sha256": cfg["sha256"],
             "source_mode": cfg["effective_source"],
             "registered_at": now_ts,
-        })
+        }))
+        is_https = request.is_secure or request.headers.get("X-Forwarded-Proto", "").lower() == "https"
+        resp.set_cookie(
+            "sf_dl_bind",
+            _spartaflash_cookie_sig(token, ip_addr),
+            max_age=300,
+            httponly=True,
+            samesite="Lax",
+            secure=is_https,
+        )
+        return resp
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
 
 
-@app.route('/api/spartaflash/download/<token>', methods=['GET'])
+@app.route('/api/spartaflash/download/<token>', methods=['POST', 'GET'])
 def spartaflash_execute_download(token: str):
     try:
         clean_token = (token or "").strip()
@@ -3301,27 +3320,51 @@ def spartaflash_execute_download(token: str):
         now_epoch = int(now_dt.timestamp() * 1000)
 
         rec_epoch = None
+        rec_hits = 0
+        rec_ip = ""
         if _has_pg_pool():
             with get_db_cursor() as cur:
-                cur.execute("SELECT id, epoch FROM spartaflash_downloads WHERE download_token = %s", (clean_token,))
+                cur.execute(
+                    "SELECT id, epoch, download_hits, ip_address FROM spartaflash_downloads WHERE download_token = %s",
+                    (clean_token,),
+                )
                 row = cur.fetchone()
                 if not row:
                     return jsonify({"ok": False, "error": "Token unduhan tidak ditemukan. Silakan isi form pendataan terlebih dahulu."}), 404
                 rec_epoch = int(row[1] or 0)
+                rec_hits = int(row[2] or 0)
+                rec_ip = str(row[3] or "")
         else:
             with _spartaflash_sqlite_lock:
                 conn = _ensure_spartaflash_sqlite()
                 try:
-                    row = conn.execute("SELECT id, epoch FROM spartaflash_downloads WHERE download_token = ?", (clean_token,)).fetchone()
+                    row = conn.execute(
+                        "SELECT id, epoch, download_hits, ip_address FROM spartaflash_downloads WHERE download_token = ?",
+                        (clean_token,),
+                    ).fetchone()
                     if not row:
                         return jsonify({"ok": False, "error": "Token unduhan tidak ditemukan. Silakan isi form pendataan terlebih dahulu."}), 404
                     rec_epoch = int(row["epoch"] or 0)
+                    rec_hits = int(row["download_hits"] or 0)
+                    rec_ip = str(row["ip_address"] or "")
                 finally:
                     conn.close()
 
-        # Token berlaku 24 jam agar user bisa retry download jika koneksi sempat terputus
-        if rec_epoch and (now_epoch - rec_epoch) > (24 * 3600 * 1000):
-            return jsonify({"ok": False, "error": "Link unduhan sudah kedaluwarsa (>24 jam). Silakan isi ulang form pendataan."}), 410
+        # Kunci token ke browser cookie + IP pengisi form
+        req_ip = _get_client_ip()
+        got_sig = (request.cookies.get("sf_dl_bind") or "").strip()
+        expected_sig = _spartaflash_cookie_sig(clean_token, rec_ip)
+        if not got_sig or not hmac.compare_digest(got_sig, expected_sig) or (rec_ip and req_ip != rec_ip):
+            return jsonify({
+                "ok": False,
+                "error": "Akses ditolak: link unduhan hanya berlaku di browser yang mengisi form. Silakan isi form pendataan terlebih dahulu.",
+            }), 403
+
+        # Token berlaku 5 menit & maksimal 3x unduhan (1x otomatis + retry)
+        if rec_epoch and (now_epoch - rec_epoch) > (5 * 60 * 1000):
+            return jsonify({"ok": False, "error": "Sesi unduhan sudah kedaluwarsa (>5 menit). Silakan isi ulang form pendataan."}), 410
+        if rec_hits >= 3:
+            return jsonify({"ok": False, "error": "Batas unduhan maksimal (3x) untuk sesi ini sudah tercapai. Silakan isi ulang form pendataan."}), 429
 
         cfg = _get_spartaflash_config()
         if cfg["effective_source"] == "missing_local":

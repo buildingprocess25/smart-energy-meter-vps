@@ -6491,6 +6491,23 @@ async function loadSpartaFlashDownloads() {
     }
 }
 
+let _sfCurrentDownloadUrl = '';
+
+function triggerSpartaFlashPostDownload(url) {
+    const targetUrl = url || _sfCurrentDownloadUrl;
+    if (!targetUrl) {
+        showModal('Sesi Unduhan Tidak Tersedia', 'Silakan isi form pendataan terlebih dahulu untuk memulai unduhan.', 'warning');
+        return;
+    }
+    const form = document.createElement('form');
+    form.method = 'POST';
+    form.action = targetUrl;
+    form.style.display = 'none';
+    document.body.appendChild(form);
+    form.submit();
+    form.remove();
+}
+
 async function submitSpartaFlashDownload(event) {
     event.preventDefault();
     const btn = $('sfDownloadBtn');
@@ -6515,17 +6532,11 @@ async function submitSpartaFlashDownload(event) {
         }
 
         _sfCurrentSha256 = res.sha256 || _sfCurrentSha256;
-        const retryLink = $('sfDirectRetryLink');
-        if (retryLink) retryLink.href = res.download_url;
+        _sfCurrentDownloadUrl = res.download_url || '';
         if ($('sfResultBox')) $('sfResultBox').style.display = 'block';
 
-        // Trigger download otomatis ke browser tanpa meninggalkan halaman
-        const a = document.createElement('a');
-        a.href = res.download_url;
-        a.download = res.filename || '';
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
+        // Trigger download otomatis via POST form (tanpa URL GET yang bisa di-copy klik kanan)
+        triggerSpartaFlashPostDownload(_sfCurrentDownloadUrl);
 
         setTimeout(() => loadSpartaFlashCenter(), 1200);
     } catch (err) {
