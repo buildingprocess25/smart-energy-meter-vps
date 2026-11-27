@@ -1442,8 +1442,8 @@ function _updateDeviceSmartBadges(deviceId, liveData, onlineOverride) {
     const stEl = $('deviceSmartStatusBadge');
     if (!upEl && !stEl) return;
 
-    const dev = (typeof allDevices !== 'undefined' && Array.isArray(allDevices))
-        ? allDevices.find(x => x.id === deviceId)
+    const dev = (typeof _deviceListCache !== 'undefined' && Array.isArray(_deviceListCache))
+        ? _deviceListCache.find(x => x.id === deviceId)
         : null;
     const isOnline = (onlineOverride !== undefined) ? onlineOverride : (dev ? !!dev.online : true);
     const upSec = dev && dev.uptimeSec != null ? Number(dev.uptimeSec) : null;
@@ -1503,7 +1503,7 @@ function updateDisplayCards(data) {
         DOM.lastUpdate.classList.add('online');
         DOM.lastUpdate.classList.remove('offline');
     }
-    _updateDeviceSmartBadges(selectedDevice, data, true);
+    _updateDeviceSmartBadges(selectedDeviceId, data, true);
 }
 function updateDisplayCardsBlank(state = 'offline') {
     CARD_IDS.forEach(id => { const el = $(id); if (el) el.textContent = '---'; });
@@ -1517,7 +1517,7 @@ function updateDisplayCardsBlank(state = 'offline') {
             DOM.lastUpdate.classList.add('offline');
         }
     }
-    _updateDeviceSmartBadges(selectedDevice, null, state === 'connecting');
+    _updateDeviceSmartBadges(selectedDeviceId, null, state === 'connecting');
 }
 const PARAM_INFO = {
     voltage: { label: 'Voltage', unit: 'V', color: '#FFA500', border: '#FF8C00' },
