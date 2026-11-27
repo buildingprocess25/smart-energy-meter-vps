@@ -1792,9 +1792,8 @@ def list_devices():
             up_raw = st.get('uptime')
             up_sec = st.get('uptime_sec') if st.get('uptime_sec') is not None else _parse_uptime_seconds(up_raw)
             up_source = 'native' if up_sec is not None else None
-            if online and up_sec is None and did in _device_online_since:
-                up_sec = max(0, int(time.time() - _device_online_since[did]))
-                up_source = 'stream'
+            if online:
+                _request_legacy_status_if_needed(did, min_interval=45.0)
             devices.append({
                 'id': did,
                 'name': device_name,
@@ -1809,7 +1808,7 @@ def list_devices():
                 'uptime': up_raw,
                 'uptimeSec': up_sec,
                 'uptimeSource': up_source,
-                'lastRebootTs': _device_last_reboot_ts.get(did) or _device_recovered_outage.get(did),
+                'lastRebootTs': _device_last_reboot_ts.get(did),
             })
     except Exception as e:
         print(f"Error listing devices: {e}")
