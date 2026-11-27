@@ -24,6 +24,8 @@ _db_last_ping = {}
 _buffer_sync_status = {}  # device_id -> {'status': str, 'total': int, 'replayed': int, 'downtime_sec': int, 'start_time': float, 'last_updated': float}
 _device_last_uptime_sec = {}
 _device_last_reboot_ts = {}
+_device_online_since = {}
+_device_recovered_outage = {}
 _legacy_status_last_polled = {}
 
 
@@ -165,7 +167,14 @@ def _on_message(client, userdata, msg):
 
             if not device_id or device_id == 'all' or (device_type and raw_mac.lower() == 'all'):
                 return
-            _mqtt_last_seen[device_id] = time.time()
+            _now_seen = time.time()
+            _prev_seen = _mqtt_last_seen.get(device_id, 0)
+            if device_id not in _device_online_since:
+                _device_online_since[device_id] = _now_seen
+            elif _prev_seen > 0 and (_now_seen - _prev_seen) > 120:
+                _device_online_since[device_id] = _now_seen
+                _device_recovered_outage[device_id] = _now_seen
+            _mqtt_last_seen[device_id] = _now_seen
             if device_id not in _mqtt_live_data:
                 _mqtt_live_data[device_id] = {}
             if device_type:
@@ -1782,8 +1791,10 @@ def list_devices():
             st = st if isinstance(st, dict) else {}
             up_raw = st.get('uptime')
             up_sec = st.get('uptime_sec') if st.get('uptime_sec') is not None else _parse_uptime_seconds(up_raw)
-            if online and up_sec is None:
-                _request_legacy_status_if_needed(did, min_interval=30.0)
+            up_source = 'native' if up_sec is not None else None
+            if online and up_sec is None and did in _device_online_since:
+                up_sec = max(0, int(time.time() - _device_online_since[did]))
+                up_source = 'stream'
             devices.append({
                 'id': did,
                 'name': device_name,
@@ -1797,7 +1808,8 @@ def list_devices():
                 'bufferSync': _buffer_sync_status.get(did, None),
                 'uptime': up_raw,
                 'uptimeSec': up_sec,
-                'lastRebootTs': _device_last_reboot_ts.get(did),
+                'uptimeSource': up_source,
+                'lastRebootTs': _device_last_reboot_ts.get(did) or _device_recovered_outage.get(did),
             })
     except Exception as e:
         print(f"Error listing devices: {e}")

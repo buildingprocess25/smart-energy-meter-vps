@@ -1447,17 +1447,20 @@ function _updateDeviceSmartBadges(deviceId, liveData, onlineOverride) {
         : null;
     const isOnline = (onlineOverride !== undefined) ? onlineOverride : (dev ? !!dev.online : true);
     const upSec = dev && dev.uptimeSec != null ? Number(dev.uptimeSec) : null;
+    const upSource = dev ? dev.uptimeSource : null;
+    const isNativeRecent = (upSource === 'native' && upSec !== null && upSec < 600);
+    const hasRecentRecovery = isNativeRecent || (dev && dev.lastRebootTs && (Date.now() - Number(dev.lastRebootTs) * (Number(dev.lastRebootTs) < 1e12 ? 1000 : 1)) < 600000);
     const upText = dev ? _formatUptimeHuman(upSec, dev.uptime) : '';
 
     if (upEl) {
         if (isOnline && upText) {
-            const isRecent = upSec !== null && upSec < 600;
             upEl.style.display = 'inline-flex';
-            upEl.className = 'sf-uptime-pill' + (isRecent ? ' is-recent' : '');
-            upEl.textContent = isRecent ? `⚠ Baru Nyala: ${upText}` : `⏱ Uptime: ${upText}`;
-            upEl.title = isRecent
+            upEl.className = 'sf-uptime-pill' + (hasRecentRecovery ? ' is-recent' : '');
+            const prefix = upSource === 'stream' ? '⏱ Online' : '⏱ Uptime';
+            upEl.textContent = hasRecentRecovery ? `⚠ Baru Nyala: ${upText}` : `${prefix}: ${upText}`;
+            upEl.title = hasRecentRecovery
                 ? 'Perangkat baru menyala (<10 menit), indikasi listrik baru pulih dari padam/reboot'
-                : 'Lama perangkat menyala terus-menerus tanpa mati listrik';
+                : (upSource === 'stream' ? 'Durasi perangkat aktif mengirim data terus-menerus' : 'Lama perangkat menyala terus-menerus tanpa mati listrik');
         } else {
             upEl.style.display = 'none';
         }
@@ -1472,7 +1475,7 @@ function _updateDeviceSmartBadges(deviceId, liveData, onlineOverride) {
             stEl.classList.add('is-outage');
             stEl.textContent = '🔴 PLN PADAM / OFFLINE';
             stEl.title = 'Perangkat terputus mendadak (indikasi pemadaman PLN / Wi-Fi mati)';
-        } else if (upSec !== null && upSec < 600) {
+        } else if (hasRecentRecovery) {
             stEl.classList.add('is-recovered');
             stEl.textContent = '🟠 PULIH DARI PADAM';
             stEl.title = `Perangkat baru restart ${upText} lalu`;
