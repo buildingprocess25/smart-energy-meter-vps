@@ -192,18 +192,19 @@ def _on_message(client, userdata, msg):
             elif len(sub_parts) >= 2 and sub_parts[0] == 'status':
                 if 'status' not in _mqtt_live_data[device_id]:
                     _mqtt_live_data[device_id]['status'] = {}
-                _mqtt_live_data[device_id]['status'][sub_parts[1]] = payload
+                clean_p = payload.replace('\x00', '').strip()
+                _mqtt_live_data[device_id]['status'][sub_parts[1]] = clean_p
                 if sub_parts[1].lower() == 'uptime':
-                    _update_device_uptime(device_id, payload)
-                elif payload.strip().startswith('{'):
+                    _update_device_uptime(device_id, clean_p)
+                elif clean_p.startswith('{'):
                     try:
-                        st_json = json.loads(payload)
+                        st_json = json.loads(clean_p)
                         if isinstance(st_json, dict):
                             up_val = st_json.get('uptime') if 'uptime' in st_json else st_json.get('Uptime')
                             if up_val is not None:
                                 _update_device_uptime(device_id, up_val)
-                    except Exception:
-                        pass
+                    except Exception as ex:
+                        _mqtt_live_data[device_id]['status']['parse_err'] = str(ex)
 
             # Case 2B: Tasmota tele/stat (AlfaEnergy CT & Plug) -> tele/SENSOR, tele/STATE, stat/STATE, stat/POWER, etc.
             elif len(sub_parts) >= 2 and sub_parts[0].lower() in ('tele', 'stat'):
@@ -1808,6 +1809,7 @@ def list_devices():
                 'uptime': up_raw,
                 'uptimeSec': up_sec,
                 'uptimeSource': up_source,
+                'statusKeys': list(st.keys()),
                 'lastRebootTs': _device_last_reboot_ts.get(did),
             })
     except Exception as e:
