@@ -4700,6 +4700,7 @@ function renderSessionDashboard(sessionId) {
                     </select>
                 </div>
             </div>
+            <div id="sessionOutageSummary_${sessionId}" style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:10px;"></div>
             <div style="height:220px; position:relative; width:100%">
                 <canvas id="chart_${sessionId}"></canvas>
             </div>
@@ -4801,6 +4802,74 @@ function renderSessionChart(sessionId) {
     const endIdx = startIdx + batchSize;
     const chartLabels = sortedTimestamps.slice(startIdx, endIdx);
 
+    // Analisis Indikasi Pemadaman & AC Off (Remote) pada Session
+    const primaryPhase = phases[0]?.phase;
+    const primaryMap = {};
+    if (primaryPhase && recordsMap[primaryPhase]) {
+        recordsMap[primaryPhase].forEach(r => { if (r.timestamp) primaryMap[r.timestamp] = r; });
+    }
+    const epochs = chartLabels.map(ts => {
+        const rec = primaryMap[ts];
+        return rec && rec.epoch ? Number(rec.epoch) : null;
+    });
+    const diffs = [];
+    for (let i = 1; i < epochs.length; i++) {
+        if (epochs[i] != null && epochs[i - 1] != null && epochs[i] > epochs[i - 1]) {
+            diffs.push(epochs[i] - epochs[i - 1]);
+        }
+    }
+    diffs.sort((a, b) => a - b);
+    const medianStepMs = diffs.length ? Math.max(10000, diffs[Math.floor(diffs.length / 2)]) : 30000;
+    const gapThresholdMs = filterMode === 'session' ? Math.max(medianStepMs * 3, 180000) : Infinity;
+
+    const outageIndices = [];
+    const remoteOffIndices = [];
+    let outageCount = 0;
+    let outageMs = 0;
+    let remoteOffCount = 0;
+    let inOutage = false;
+    let prevPwr = null;
+
+    for (let i = 0; i < chartLabels.length; i++) {
+        const rec = primaryMap[chartLabels[i]];
+        const ep = epochs[i];
+        const prevEp = i > 0 ? epochs[i - 1] : null;
+        const hasGap = (ep != null && prevEp != null && (ep - prevEp) > gapThresholdMs);
+        const volt = rec && rec.Voltage != null ? Number(rec.Voltage) : null;
+        const pwr = rec && rec.Power != null ? Number(rec.Power) : null;
+        const isOfflineRec = !!(rec && rec.offline) || (volt !== null && volt > 0 && volt < 50);
+
+        if (hasGap) {
+            outageCount += 1;
+            outageMs += (ep - prevEp);
+            outageIndices.push(i);
+        } else if (isOfflineRec) {
+            if (!inOutage) {
+                outageCount += 1;
+                outageIndices.push(i);
+            }
+            if (ep != null && prevEp != null) outageMs += (ep - prevEp);
+            inOutage = true;
+        } else {
+            inOutage = false;
+            if (prevPwr !== null && prevPwr > 20 && pwr !== null && pwr <= 10 && (volt === null || volt >= 180)) {
+                remoteOffCount += 1;
+                remoteOffIndices.push(i);
+            }
+        }
+        if (pwr !== null && !isNaN(pwr) && !isOfflineRec) prevPwr = pwr;
+    }
+
+    const summaryEl = $(`sessionOutageSummary_${sessionId}`);
+    if (summaryEl) {
+        const durMin = Math.max(1, Math.round(outageMs / 60000));
+        const outagePill = outageCount > 0
+            ? `<span class="sf-smart-status-pill is-outage" title="Terdeteksi flag offline, tegangan drop, atau celah waktu pengiriman data">⚡ Indikasi Padam: ${outageCount}× (${durMin} menit)</span>`
+            : `<span class="sf-smart-status-pill is-on" title="Tidak ditemukan pemadaman atau putus daya pada sesi ini">✓ Tidak Ada Padam (Listrik Stabil)</span>`;
+        const remotePill = `<span class="sf-smart-status-pill is-remote-off" title="Daya turun ke ≤ 10W sementara tegangan tetap normal (≥ 180V)">🔵 AC Off (Remote): ${remoteOffCount}×</span>`;
+        summaryEl.innerHTML = outagePill + remotePill;
+    }
+
     _renderBatchNav(`sessionBatchNav_${sessionId}`, currentPage, totalPages, startIdx + 1, Math.min(endIdx, totalSlots), totalSlots, (newPage) => {
         _sessionSelectedPage[sessionId] = newPage;
         renderSessionChart(sessionId);
@@ -4883,7 +4952,48 @@ function renderSessionChart(sessionId) {
                     }
                 }
             }
-        }
+        },
+        plugins: [{
+            id: 'sessionPowerMarkers',
+            afterDatasetsDraw(chart) {
+                const { ctx: c, chartArea, scales } = chart;
+                const xScale = scales.x;
+                if (!xScale || !chartArea) return;
+                c.save();
+                let lastOutX = -999;
+                for (const idx of outageIndices) {
+                    const x = xScale.getPixelForValue(idx);
+                    if (x < chartArea.left || x > chartArea.right || (x - lastOutX) < 26) continue;
+                    lastOutX = x;
+                    c.strokeStyle = 'rgba(239, 68, 68, 0.72)';
+                    c.lineWidth = 1.2;
+                    c.setLineDash([4, 3]);
+                    c.beginPath();
+                    c.moveTo(x, chartArea.top + 14);
+                    c.lineTo(x, chartArea.bottom);
+                    c.stroke();
+                    c.setLineDash([]);
+                    c.fillStyle = '#ef4444';
+                    c.font = 'bold 10px sans-serif';
+                    c.textAlign = 'center';
+                    c.fillText('⚡', x, chartArea.top + 11);
+                }
+                let lastOffX = -999;
+                for (const idx of remoteOffIndices) {
+                    const x = xScale.getPixelForValue(idx);
+                    if (x < chartArea.left || x > chartArea.right || (x - lastOffX) < 34) continue;
+                    lastOffX = x;
+                    c.fillStyle = '#38bdf8';
+                    c.beginPath();
+                    c.arc(x, chartArea.top + 16, 3.5, 0, Math.PI * 2);
+                    c.fill();
+                    c.font = 'bold 9px sans-serif';
+                    c.textAlign = 'center';
+                    c.fillText('OFF', x, chartArea.top + 9);
+                }
+                c.restore();
+            }
+        }]
     });
     _initChartGestures(_sessionCharts[sessionId]);
 }
@@ -6245,6 +6355,74 @@ function renderOfflineChart() {
     const startIdx = (currentPage - 1) * batchSize;
     const endIdx = startIdx + batchSize;
     const chartLabels = sortedTimestamps.slice(startIdx, endIdx);
+
+    // Analisis Indikasi Pemadaman & AC Off (Remote) pada Session
+    const primaryPhase = phases[0]?.phase;
+    const primaryMap = {};
+    if (primaryPhase && recordsMap[primaryPhase]) {
+        recordsMap[primaryPhase].forEach(r => { if (r.timestamp) primaryMap[r.timestamp] = r; });
+    }
+    const epochs = chartLabels.map(ts => {
+        const rec = primaryMap[ts];
+        return rec && rec.epoch ? Number(rec.epoch) : null;
+    });
+    const diffs = [];
+    for (let i = 1; i < epochs.length; i++) {
+        if (epochs[i] != null && epochs[i - 1] != null && epochs[i] > epochs[i - 1]) {
+            diffs.push(epochs[i] - epochs[i - 1]);
+        }
+    }
+    diffs.sort((a, b) => a - b);
+    const medianStepMs = diffs.length ? Math.max(10000, diffs[Math.floor(diffs.length / 2)]) : 30000;
+    const gapThresholdMs = filterMode === 'session' ? Math.max(medianStepMs * 3, 180000) : Infinity;
+
+    const outageIndices = [];
+    const remoteOffIndices = [];
+    let outageCount = 0;
+    let outageMs = 0;
+    let remoteOffCount = 0;
+    let inOutage = false;
+    let prevPwr = null;
+
+    for (let i = 0; i < chartLabels.length; i++) {
+        const rec = primaryMap[chartLabels[i]];
+        const ep = epochs[i];
+        const prevEp = i > 0 ? epochs[i - 1] : null;
+        const hasGap = (ep != null && prevEp != null && (ep - prevEp) > gapThresholdMs);
+        const volt = rec && rec.Voltage != null ? Number(rec.Voltage) : null;
+        const pwr = rec && rec.Power != null ? Number(rec.Power) : null;
+        const isOfflineRec = !!(rec && rec.offline) || (volt !== null && volt > 0 && volt < 50);
+
+        if (hasGap) {
+            outageCount += 1;
+            outageMs += (ep - prevEp);
+            outageIndices.push(i);
+        } else if (isOfflineRec) {
+            if (!inOutage) {
+                outageCount += 1;
+                outageIndices.push(i);
+            }
+            if (ep != null && prevEp != null) outageMs += (ep - prevEp);
+            inOutage = true;
+        } else {
+            inOutage = false;
+            if (prevPwr !== null && prevPwr > 20 && pwr !== null && pwr <= 10 && (volt === null || volt >= 180)) {
+                remoteOffCount += 1;
+                remoteOffIndices.push(i);
+            }
+        }
+        if (pwr !== null && !isNaN(pwr) && !isOfflineRec) prevPwr = pwr;
+    }
+
+    const summaryEl = $(`sessionOutageSummary_${sessionId}`);
+    if (summaryEl) {
+        const durMin = Math.max(1, Math.round(outageMs / 60000));
+        const outagePill = outageCount > 0
+            ? `<span class="sf-smart-status-pill is-outage" title="Terdeteksi flag offline, tegangan drop, atau celah waktu pengiriman data">⚡ Indikasi Padam: ${outageCount}× (${durMin} menit)</span>`
+            : `<span class="sf-smart-status-pill is-on" title="Tidak ditemukan pemadaman atau putus daya pada sesi ini">✓ Tidak Ada Padam (Listrik Stabil)</span>`;
+        const remotePill = `<span class="sf-smart-status-pill is-remote-off" title="Daya turun ke ≤ 10W sementara tegangan tetap normal (≥ 180V)">🔵 AC Off (Remote): ${remoteOffCount}×</span>`;
+        summaryEl.innerHTML = outagePill + remotePill;
+    }
 
     _renderBatchNav('owChartBatchNav', currentPage, totalPages, startIdx + 1, Math.min(endIdx, totalSlots), totalSlots, (newPage) => {
         activeOfflineSelectedPage = newPage;
