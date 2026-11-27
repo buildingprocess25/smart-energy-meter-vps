@@ -1478,11 +1478,11 @@ function _updateDeviceSmartBadges(deviceId, liveData, onlineOverride) {
             stEl.title = `Perangkat baru restart ${upText} lalu`;
         } else if (powerW !== null && !isNaN(powerW) && powerW <= 10 && (voltV === null || voltV >= 180)) {
             stEl.classList.add('is-remote-off');
-            stEl.textContent = '🔵 AC OFF (Remote)';
-            stEl.title = 'Listrik PLN normal (~220V) & Uptime tetap berjalan; beban/AC dimatikan via remote/standby';
+            stEl.textContent = '🔵 BEBAN OFF / STANDBY';
+            stEl.title = 'Listrik PLN normal (~220V) & Uptime tetap berjalan; beban dimatikan atau standby';
         } else if (powerW !== null && !isNaN(powerW) && powerW > 10) {
             stEl.classList.add('is-on');
-            stEl.textContent = '🟢 BEBAN / AC ON';
+            stEl.textContent = '🟢 BEBAN AKTIF';
             stEl.title = 'Perangkat online dan beban aktif';
         } else {
             stEl.classList.add('is-on');
@@ -4866,7 +4866,7 @@ function renderSessionChart(sessionId) {
         const outagePill = outageCount > 0
             ? `<span class="sf-smart-status-pill is-outage" title="Terdeteksi flag offline, tegangan drop, atau celah waktu pengiriman data">⚡ Indikasi Padam: ${outageCount}× (${durMin} menit)</span>`
             : `<span class="sf-smart-status-pill is-on" title="Tidak ditemukan pemadaman atau putus daya pada sesi ini">✓ Tidak Ada Padam (Listrik Stabil)</span>`;
-        const remotePill = `<span class="sf-smart-status-pill is-remote-off" title="Daya turun ke ≤ 10W sementara tegangan tetap normal (≥ 180V)">🔵 AC Off (Remote): ${remoteOffCount}×</span>`;
+        const remotePill = `<span class="sf-smart-status-pill is-remote-off" title="Daya turun ke ≤ 10W sementara tegangan tetap normal (≥ 180V)">🔵 Beban Off / Standby: ${remoteOffCount}×</span>`;
         summaryEl.innerHTML = outagePill + remotePill;
     }
 
